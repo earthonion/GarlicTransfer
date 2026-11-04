@@ -80,7 +80,7 @@ async function refreshPairingStatus() {
   controls.pairingState.textContent = supported
     ? 'Checking whether this PS5 has been paired…'
     : window.saveTransfer.pairingAvailable
-      ? 'One-time pairing is available for a discovered PS5 on firmware 14.22.'
+      ? 'Experimental one-time pairing is available for a discovered PS5 on firmware 14.22.'
       : 'On Linux and macOS, use a PS4 USB backup or enter the decimal account ID.';
   if (!supported) return;
   try {
@@ -88,7 +88,7 @@ async function refreshPairingStatus() {
     if (controls.consoleSelect.selectedOptions[0] !== selected) return;
     controls.pairingState.textContent = paired
       ? 'Paired on this PC. Browse from the PS5 home screen.'
-      : 'Not paired yet. Pair once to browse without an account ID or USB backup.';
+      : 'Not paired yet. Experimental pairing may let you browse without entering an account ID.';
   } catch (error) {
     if (controls.consoleSelect.selectedOptions[0] === selected) {
       controls.pairingState.textContent = `Could not check pairing: ${error.message}`;
@@ -451,7 +451,7 @@ controls.pairBtn.addEventListener('click', async () => {
   }
   activeTransfer = 'pair';
   busy(true);
-  status('Starting the pairing listener. When ready, open PS5 Data Transfer and select “GarlicTransfer Pairing”.');
+  status('Starting the experimental pairing listener. When ready, open PS5 Data Transfer and select “GarlicTransfer Pairing”.');
   try {
     await window.saveTransfer.pair(current);
   } catch (error) {
