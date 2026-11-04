@@ -119,8 +119,14 @@ def create_metadata(output, user_id, title_id, entry_id, assets, user_name="user
             (int(user_id, 16), user_name, user_name, user_name, uuid.uuid4().hex[:16]),
         )
         db.execute(
-            "INSERT INTO users_savedata_tbl VALUES (?, ?, ?, ?, ?, 1, 1, 0, ?)",
-            (int(user_id, 16), title_id, title_id, total_size, bu_size, int(time.time())),
+            "INSERT INTO users_savedata_tbl VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            (
+                int(user_id, 16), title_id, title_id, total_size,
+                0 if save_marker == "savedata" else bu_size,
+                0 if save_marker == "savedata" else 1,
+                255 if save_marker == "savedata" else 1,
+                int(time.time()),
+            ),
         )
         save_path = f"/user/home/{user_id}/{save_marker}/{title_id}/"
         db.execute(
@@ -171,6 +177,12 @@ def create_filtered_metadata(
         ).fetchall()
         if {row[0] for row in rows} != set(entry_ids):
             raise ValueError("one or more selected save entries are absent from the source metadata")
+        source_owners = {
+            int(row[1].strip("/").split("/")[2], 16) for row in rows
+        }
+        if len(source_owners) != 1:
+            raise ValueError("selected save entries must belong to one source user")
+        source_owner = source_owners.pop()
         target_user = db.execute(
             "SELECT * FROM user_info_tbl WHERE user_id = ?", (int(user_id, 16),)
         ).fetchone()
@@ -207,19 +219,39 @@ def create_filtered_metadata(
             entries_by_title.setdefault(title_id, []).append(row)
 
         for title_id, title_rows in entries_by_title.items():
-            original = next((row for row in savedata_rows if row[1].upper() == title_id), None)
-            total_size = sum(int(row[7]) for row in title_rows)
-            bu_size = max(
-                int(item["size"])
+            # The installed title ID can differ from the save-directory title ID.
+            # Match the directory field and the source owner before rewriting the
+            # user ID; otherwise a PS4 save can silently acquire PS5 defaults.
+            original = next(
+                (row for row in savedata_rows
+                 if row[0] == source_owner and row[2].upper() == title_id),
+                None,
+            )
+            markers = {
+                infer_save_marker(upload_entries[row[0]]["files"], title_id)
                 for row in title_rows
-                for item in upload_entries[row[0]]["files"]
+            }
+            if len(markers) != 1:
+                raise ValueError("selected save entries mix PS4 and PS5 paths")
+            save_marker = markers.pop()
+            total_size = sum(int(row[7]) for row in title_rows)
+            bu_size = original[4] if original else (
+                0 if save_marker == "savedata" else max(
+                    int(item["size"])
+                    for row in title_rows
+                    for item in upload_entries[row[0]]["files"]
+                )
             )
             db.execute(
                 "INSERT INTO users_savedata_tbl VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    int(user_id, 16), title_id, title_id, total_size, bu_size,
-                    original[5] if original else 1,
-                    original[6] if original else 1,
+                    int(user_id, 16),
+                    original[1] if original else title_id,
+                    original[2] if original else title_id,
+                    total_size,
+                    bu_size,
+                    original[5] if original else (0 if save_marker == "savedata" else 1),
+                    original[6] if original else (255 if save_marker == "savedata" else 1),
                     original[7] if original else 0,
                     original[8] if original else int(time.time()),
                 ),

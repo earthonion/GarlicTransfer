@@ -30,7 +30,13 @@ class MetadataSaveMarkerTests(unittest.TestCase):
                 create_metadata(output, "12345678", "ABCDEFGHI", 1, assets)
                 with closing(sqlite3.connect(output)) as db:
                     actual = db.execute("SELECT path FROM dir_entry_info_tbl WHERE id = 1").fetchone()[0]
+                    format_type, upload_setting, backup_size = db.execute(
+                        "SELECT format_type, upload_setting, bu_size FROM users_savedata_tbl"
+                    ).fetchone()
                 self.assertEqual(actual, f"/user/home/12345678/{marker}/ABCDEFGHI/")
+                self.assertEqual(format_type, 0 if marker == "savedata" else 1)
+                self.assertEqual(upload_setting, 255 if marker == "savedata" else 1)
+                self.assertEqual(backup_size, 0 if marker == "savedata" else 4)
 
 
 if __name__ == "__main__":
