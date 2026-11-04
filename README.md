@@ -17,7 +17,7 @@ This is research software. Back up your saves before using Upload. Upload can ov
 - Automatic source power signal and optional clean `DisconnectPS5` reboot after downloading.
 - Local or volunteer PPR oracle support.
 
-Console-to-PC downloading has been exercised on 13.60. Protocol version handling for 13.x and 14.x is implemented from live responses. Other firmware versions use the inferred major-version mapping and remain unverified.
+Console-to-PC downloading has been exercised on 13.60. On one tested 14.22 console, browsing from the home screen and downloading the save list has also been verified. Its power request used a hash of the PSN account ID. For the first browse, the app can capture that identifier through a one-time Data Transfer menu selection, read the account ID from a standard PS4 USB backup folder, or accept the decimal account ID. Other firmware versions use the inferred major-version mapping and remain unverified.
 
 ## Requirements
 
@@ -88,10 +88,14 @@ dt_downloads/
 ## Download saves
 
 1. Start GarlicTransfer and click **Discover consoles**.
-2. Select the source console, then click **Browse console saves**.
-3. If asked, press the console power button until it beeps and release.
-4. Select one or more saves and click **Download selected**, or use the per-save Download button.
-5. Keep the session open for more selections, or choose **Finish and reboot console**.
+2. Select the source console. For the first browse on 14.22, click **Pair this PS5 once**. When the listener is ready, open **Settings → System → System Software → Data Transfer** on the PS5 and select **GarlicTransfer Pairing** from the discovered consoles. The PS5 may say **Can't transfer data**; this pairing does not start a save migration. Return to the home screen after GarlicTransfer confirms pairing. The paired identifier is stored only in the app's private user-data folder and is reused for this console and firmware.
+   Alternatively, click **Find in PS4 USB backup** and select the USB drive, its `PS4` or `SAVEDATA` folder, or the 16-hex-digit account folder inside `SAVEDATA`. You can enter the decimal PSN account ID instead. GarlicTransfer only reads folder names; it does not import or modify the PS4 save. After a successful browse, the per-console `metadata.db` supplies the ID automatically.
+3. Click **Browse console saves** while the PS5 is at its home screen; you do not need to open Data Transfer on the PS5 first.
+4. If asked, briefly press the console power button until it beeps and release.
+5. Select one or more saves and click **Download selected**, or use the per-save Download button.
+6. Keep the session open for more selections, or choose **Finish and reboot console**.
+
+The account ID is used to construct the local Data Transfer approval request. It is not a password or PSN login. The app passes it to the Python backend over standard input, rather than placing it in the process command line. Enter it as a decimal string: JavaScript numbers cannot preserve every 64-bit account ID. If `PS4/SAVEDATA` contains several account folders, select the account folder for the same PSN user as the PS5 profile being browsed.
 
 Downloaded entry folders contain the save containers and a manifest with paths, sizes, SHA-256 hashes, and GFP5 headers.
 
@@ -125,6 +129,8 @@ Only 13.x/14.x are live-verified. The remaining mappings are inferred from the m
 ```bash
 npm run check
 python3 -m py_compile poc/dt_backend.py poc/dt_download.py poc/dt_metadata.py poc/dt_source.py poc/dt_discovery.py
+node --test tests/account_id.test.cjs tests/pairing_store.test.cjs
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
 ## Title data

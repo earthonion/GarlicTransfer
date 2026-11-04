@@ -9,6 +9,8 @@ from poc.dt_psk_client import command_header, recv_exact, recv_record, send_reco
 
 def derive_with_oracle(host, port, client_value, server_value):
     with socket.create_connection((host, port), timeout=5) as sock:
+        # Volunteer workers can take longer than the TCP connect timeout.
+        sock.settimeout(30)
         sock.sendall(client_value + server_value)
         response = recv_exact(sock, 40)
     return response[:16], response[16:32], response[32:36], response[36:40]

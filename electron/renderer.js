@@ -5,7 +5,7 @@ for (const id of [
   'useRemoteOracle', 'serverUrl', 'workerKey', 'settingsSave', 'settingsStatus',
   'userSelect', 'userSelectLabel', 'uploadSaveSelect', 'uploadSaveSelectLabel', 'confirmUploadBtn', 'sourcePort', 'dataPort', 'discoveryPort',
   'downloadBtn', 'downloadSelectedBtn', 'uploadBtn', 'finishBtn', 'cancelBtn', 'powerBtn', 'status', 'entries', 'log',
-  'consoleSelect', 'discoverBtn', 'preferIpv6', 'selectAllEntries', 'entryCount', 'powerModal',
+  'consoleSelect', 'discoverBtn', 'accountId', 'findAccountIdBtn', 'pairBtn', 'pairingState', 'preferIpv6', 'selectAllEntries', 'entryCount', 'powerModal',
 ]) controls[id] = byId(id);
 let activeTransfer = null;
 let availableUsers = [];
@@ -29,6 +29,9 @@ function options() {
     serverUrl: controls.serverUrl.value.trim(),
     workerKey: controls.workerKey.value.trim(),
     clientHost,
+    hostId: controls.consoleSelect.selectedOptions[0]?.dataset.hostId || '',
+    systemVersion: controls.consoleSelect.selectedOptions[0]?.dataset.firmware || '',
+    accountId: controls.accountId.value.trim(),
     interface: controls.interface.value.trim(),
     hardware: Number(controls.hardware.value || 0),
     output: controls.output.value.trim() || 'dt_downloads',
@@ -63,6 +66,30 @@ function applyConsoleProfile() {
   controls.output.value = profilePath(root, profile);
   controls.assets.value = controls.output.value;
   controls.metadata.value = '';
+  controls.accountId.value = '';
+  refreshPairingStatus();
+}
+
+async function refreshPairingStatus() {
+  const selected = controls.consoleSelect.selectedOptions[0];
+  const identity = { hostId: selected?.dataset.hostId || '', systemVersion: selected?.dataset.firmware || '' };
+  const supported = Boolean(selected?.value) && identity.systemVersion === '14220000';
+  controls.pairBtn.disabled = !supported || Boolean(activeTransfer) || browseSessionActive;
+  controls.pairingState.textContent = supported
+    ? 'Checking whether this PS5 has been paired…'
+    : 'One-time pairing is available for a discovered PS5 on firmware 14.22.';
+  if (!supported) return;
+  try {
+    const paired = await window.saveTransfer.pairingStatus(identity);
+    if (controls.consoleSelect.selectedOptions[0] !== selected) return;
+    controls.pairingState.textContent = paired
+      ? 'Paired on this PC. Browse from the PS5 home screen.'
+      : 'Not paired yet. Pair once to browse without an account ID or USB backup.';
+  } catch (error) {
+    if (controls.consoleSelect.selectedOptions[0] === selected) {
+      controls.pairingState.textContent = `Could not check pairing: ${error.message}`;
+    }
+  }
 }
 
 function updateSelection() {
@@ -82,6 +109,10 @@ function updateSelection() {
 function busy(value) {
   controls.downloadBtn.disabled = value;
   controls.uploadBtn.disabled = value;
+  controls.accountId.disabled = value || browseSessionActive;
+  controls.findAccountIdBtn.disabled = value || browseSessionActive;
+  controls.pairBtn.disabled = value || browseSessionActive ||
+    controls.consoleSelect.selectedOptions[0]?.dataset.firmware !== '14220000';
   controls.cancelBtn.disabled = !value;
   controls.consoleSelect.disabled = value || browseSessionActive;
   controls.discoverBtn.disabled = value || browseSessionActive;
@@ -354,6 +385,7 @@ controls.discoverBtn.addEventListener('click', async () => {
       const option = document.createElement('option');
       option.value = console.host;
       option.dataset.hostId = console.hostId;
+      option.dataset.firmware = console.firmware;
       option.textContent = `${console.name} — ${console.host} (${formatFirmware(console.firmware)})`;
       controls.consoleSelect.appendChild(option);
     }
@@ -394,6 +426,36 @@ async function loadSettings() {
 }
 controls.consoleSelect.addEventListener('change', applyConsoleProfile);
 loadSettings();
+
+controls.findAccountIdBtn.addEventListener('click', async () => {
+  try {
+    const accountId = await window.saveTransfer.chooseAccountId();
+    if (accountId !== null) {
+      controls.accountId.value = accountId;
+      status('PSN account ID found in the PS4 USB backup folder. You can browse this console from its home screen.');
+    }
+  } catch (error) {
+    status(`Could not find an account ID: ${error.message}`);
+  }
+});
+
+controls.pairBtn.addEventListener('click', async () => {
+  const current = options();
+  if (!current.clientHost) {
+    status('Discover and select the PS5 first.');
+    return;
+  }
+  activeTransfer = 'pair';
+  busy(true);
+  status('Starting the pairing listener. When ready, open PS5 Data Transfer and select “GarlicTransfer Pairing”.');
+  try {
+    await window.saveTransfer.pair(current);
+  } catch (error) {
+    activeTransfer = null;
+    busy(false);
+    status(`Could not start pairing: ${error.message}`);
+  }
+});
 
 controls.downloadBtn.addEventListener('click', () => browseSaves(false));
 controls.downloadSelectedBtn.addEventListener('click', () => startDownload([...selectedEntryIds]));
@@ -454,6 +516,13 @@ for (const name of ['output', 'metadata', 'assets']) {
 
 window.saveTransfer.onEvent((event) => {
   if (event.type === 'log') appendLog(event.message);
+  if (event.type === 'paired') {
+    controls.accountId.value = '';
+    activeTransfer = null;
+    busy(false);
+    controls.pairingState.textContent = 'Paired on this PC. Browse from the PS5 home screen.';
+    status(event.message);
+  }
   if (event.type === 'powerRequired') showPowerModal();
   if (event.type === 'status') {
     status(event.message);
@@ -496,7 +565,7 @@ window.saveTransfer.onEvent((event) => {
   if (event.type === 'done' && event.metadataOnly) {
     const mode = activeTransfer;
     browseSessionActive = false;
-    dataTransferArmedHost = browserHost;
+    dataTransferArmedHost = event.consoleDisconnected ? null : browserHost;
     activeTransfer = null;
     availableUsers = event.users || [];
     controls.metadata.value = `${options().output}/metadata.db`;
@@ -512,6 +581,7 @@ window.saveTransfer.onEvent((event) => {
   if (event.type === 'done') {
     const mode = activeTransfer;
     browseSessionActive = false;
+    if (mode === 'finish') dataTransferArmedHost = null;
     activeTransfer = null;
     availableUsers = event.users || availableUsers;
     if (mode === 'download') {

@@ -7,6 +7,8 @@ const path = require('node:path');
 const { startRemoteOracle, stopRemoteOracle } = require('./remote_oracle.cjs');
 const { loadSettings, saveSettings } = require('./config.cjs');
 const { titleName } = require('./titles.cjs');
+const { accountIdFromBackupDirectory } = require('./account_id.cjs');
+const { pairingPrefixPath, existingPairingPrefix } = require('./pairing_store.cjs');
 const { resourceRoot, oracleElf, workDir, pythonBin } = require('./paths.cjs');
 let window;
 let active = null;
@@ -97,14 +99,22 @@ function stopActive() {
 
 function startDownload(options) {
   if (active) throw new Error('another transfer is already running');
+  // The renderer never chooses a local credential file. Resolve it only from
+  // the console identity reported by discovery, inside the main process.
+  delete options.approvalPrefixPath;
+  if (options.hostId && options.systemVersion) {
+    const paired = existingPairingPrefix(app.getPath('userData'), options);
+    if (paired) options.approvalPrefixPath = paired;
+  }
   active = { kind: 'download', completed: false, awaitingSelection: false, process: null };
   (async () => {
     await ensureOracle(options);
-    const child = spawn(pythonBin(), ['-u', '-m', 'poc.dt_backend', 'download', JSON.stringify(options)], {
+    const child = spawn(pythonBin(), ['-u', '-m', 'poc.dt_backend', 'download', '-'], {
       cwd: workDir,
       env: { ...process.env, PYTHONPATH: resourceRoot },
     });
     active.process = child;
+    child.stdin.write(`${JSON.stringify(options)}\n`);
     let buffer = '';
     child.stdout.on('data', (chunk) => {
       buffer += chunk;
@@ -133,6 +143,74 @@ function startDownload(options) {
       }
     });
   })().catch((error) => finish(error));
+}
+
+function startPairing(options) {
+  if (active) throw new Error('another transfer is already running');
+  if (net.isIP(options.clientHost) !== 4) throw new Error('Discover and select a PS5 IPv4 address first');
+  if (options.systemVersion !== '14220000') throw new Error('One-time pairing is currently verified only for PS5 14.22');
+  const prefixPath = pairingPrefixPath(app.getPath('userData'), options);
+  fs.mkdirSync(path.dirname(prefixPath), { recursive: true, mode: 0o700 });
+  active = { kind: 'pair', completed: false, process: null };
+  const session = active;
+  (async () => {
+    await ensureOracle(options);
+    if (active !== session) {
+      if (!active) stopOracle();
+      return;
+    }
+    const child = spawn(pythonBin(), ['-u', '-m', 'poc.dt_pair', '-'], {
+      cwd: workDir,
+      env: { ...process.env, PYTHONPATH: resourceRoot },
+    });
+    session.process = child;
+    child.stdin.end(`${JSON.stringify({
+      ps5Ip: options.clientHost,
+      systemVersion: options.systemVersion,
+      oracleHost: options.oracleHost,
+      oraclePort: Number(options.oraclePort || 9022),
+      prefixPath,
+      duration: 300,
+    })}\n`);
+    let buffer = '';
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      while (buffer.includes('\n')) {
+        const index = buffer.indexOf('\n');
+        const line = buffer.slice(0, index);
+        buffer = buffer.slice(index + 1);
+        try {
+          const event = JSON.parse(line);
+          if (event.type === 'status') send('status', { message: String(event.message || '') });
+          if (event.type === 'error') session.error = String(event.message || 'Pairing failed');
+          if (event.type === 'paired') {
+            if (!existingPairingPrefix(app.getPath('userData'), options)) {
+              session.error = 'Pairing helper did not save a valid identifier';
+            } else {
+              session.completed = true;
+            }
+          }
+        } catch {
+          // Do not forward unrecognized helper output; it could contain request data.
+          session.error = 'Pairing helper sent an unreadable response';
+        }
+      }
+    });
+    child.stderr.on('data', () => { session.error ||= 'Pairing helper failed'; });
+    child.on('error', (error) => {
+      if (active === session) finish(error);
+    });
+    child.on('close', (code) => {
+      if (active !== session) return;
+      if (!session.completed || code !== 0) finish(new Error(session.error || `Pairing exited with status ${code}`));
+      else {
+        finish();
+        send('paired', { message: 'Pairing saved for this PS5. Return to its home screen, then browse saves.' });
+      }
+    });
+  })().catch((error) => {
+    if (active === session) finish(error);
+  });
 }
 
 function getConsoles(options) {
@@ -357,7 +435,17 @@ ipcMain.handle('dialog:assets', async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle('dialog:account-id', async () => {
+  const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'] });
+  return result.canceled ? null : accountIdFromBackupDirectory(result.filePaths[0]);
+});
+
 ipcMain.handle('transfer:download', (_event, options) => startDownload(options));
+ipcMain.handle('transfer:pair', (_event, options) => startPairing(options));
+ipcMain.handle('transfer:pair-status', (_event, identity) => {
+  if (!identity?.hostId || !identity?.systemVersion) return false;
+  return Boolean(existingPairingPrefix(app.getPath('userData'), identity));
+});
 ipcMain.handle('transfer:select', (_event, entryIds) => {
   if (!active || active.kind !== 'download' || !active.awaitingSelection || !active.process) {
     throw new Error('no download session is waiting for a selection');
