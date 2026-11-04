@@ -9,6 +9,7 @@ const { loadSettings, saveSettings } = require('./config.cjs');
 const { titleName } = require('./titles.cjs');
 const { accountIdFromBackupDirectory } = require('./account_id.cjs');
 const { pairingPrefixPath, existingPairingPrefix } = require('./pairing_store.cjs');
+const { inspectLocalSave } = require('./local_save.cjs');
 const { resourceRoot, oracleElf, workDir, pythonBin } = require('./paths.cjs');
 let window;
 let active = null;
@@ -321,9 +322,41 @@ function createMetadata(options) {
 function startUpload(options) {
   if (active) throw new Error('another transfer is already running');
   active = { kind: 'upload', completed: false, process: null };
+  const session = active;
   (async () => {
+    if (options.localSave) {
+      const local = await inspectLocalSave(options.localSave.saveDir);
+      if (active !== session) return;
+      if (Number(options.localSave.entryId) !== local.entryId) {
+        throw new Error('Selected save changed; choose its folder again');
+      }
+      if (!options.metadata) throw new Error('Browse the destination console first to choose its user');
+      const users = await getUsers(options.metadata);
+      if (active !== session) return;
+      if (!users.some((user) => String(user.id).toLowerCase() === String(options.userId).toLowerCase())) {
+        throw new Error('Destination user is not in the console save list; browse again');
+      }
+      options.assets = local.saveDir;
+      options.entryIds = [local.entryId];
+      options.titleId = local.title;
+      options.metadata = '';
+      if (local.sourceMetadata) {
+        try {
+          const inventory = await getInventory(local.sourceMetadata);
+          if (active !== session) return;
+          if (inventory.entries.some((entry) => entry.id === local.entryId && entry.title === local.title)) {
+            options.metadata = local.sourceMetadata;
+          }
+        } catch {
+          // A save folder can still be used without its original metadata database.
+        }
+      }
+      send('log', { message: `[save] using local ${local.kind} save ${local.title} (entry ${local.entryId})` });
+    }
     await createMetadata(options);
+    if (active !== session) return;
     await ensureOracle(options);
+    if (active !== session) return;
     const sourceEnvironment = {
       DT_METADATA: path.resolve(options.metadata),
       DT_ASSETS: path.resolve(options.assets),
@@ -352,9 +385,10 @@ function startUpload(options) {
       send('log', { message: '[privilege] authenticate to bind Data Transfer ports 1004–1006' });
     }
     const child = spawn(command, args, { cwd: workDir, env: environment });
-    active.process = child;
+    session.process = child;
     let buffer = '';
     child.stdout.on('data', (chunk) => {
+      if (active !== session) return;
       buffer += chunk;
       while (buffer.includes('\n')) {
         const index = buffer.indexOf('\n');
@@ -373,23 +407,29 @@ function startUpload(options) {
           }, 1000);
         }
         if (line.toLowerCase().includes('cmd=0xb3')) {
-          active.completed = true;
+          session.completed = true;
           send('done', { message: 'Save upload completed. The client may reboot to finish.' });
           stopActive();
           return;
         }
       }
     });
-    child.stderr.on('data', (data) => send('log', { message: String(data).trim() }));
-    child.on('error', (error) => finish(error));
+    child.stderr.on('data', (data) => {
+      if (active === session) send('log', { message: String(data).trim() });
+    });
+    child.on('error', (error) => {
+      if (active === session) finish(error);
+    });
     child.on('close', (code) => {
-      if (active && active.kind === 'upload' && !active.completed && code !== 0) {
+      if (active === session && !session.completed && code !== 0) {
         finish(new Error(`source emulator exited with status ${code}`));
-      } else {
+      } else if (active === session) {
         finish();
       }
     });
-  })().catch((error) => finish(error));
+  })().catch((error) => {
+    if (active === session) finish(error);
+  });
 }
 
 function finish(error) {
@@ -437,6 +477,20 @@ ipcMain.handle('dialog:metadata', async () => {
 ipcMain.handle('dialog:assets', async () => {
   const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'] });
   return result.canceled ? null : result.filePaths[0];
+});
+
+ipcMain.handle('dialog:upload-save', async () => {
+  const result = await dialog.showOpenDialog(window, {
+    defaultPath: app.getPath('documents'),
+    properties: ['openDirectory'],
+    title: 'Choose a GarlicTransfer downloaded save folder',
+  });
+  if (result.canceled) return { cancelled: true };
+  try {
+    return { cancelled: false, ...await inspectLocalSave(result.filePaths[0]) };
+  } catch (error) {
+    return { cancelled: false, error: error.message };
+  }
 });
 
 ipcMain.handle('dialog:account-id', async () => {

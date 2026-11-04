@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('saveTransfer', {
   chooseOutput: () => ipcRenderer.invoke('dialog:output'),
   chooseMetadata: () => ipcRenderer.invoke('dialog:metadata'),
   chooseAssets: () => ipcRenderer.invoke('dialog:assets'),
+  chooseUploadSave: () => ipcRenderer.invoke('dialog:upload-save'),
   chooseAccountId: () => ipcRenderer.invoke('dialog:account-id'),
   pair: (options) => ipcRenderer.invoke('transfer:pair', options),
   pairingStatus: (identity) => ipcRenderer.invoke('transfer:pair-status', identity),

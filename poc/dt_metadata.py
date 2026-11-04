@@ -79,6 +79,20 @@ def infer_title_id(title_id, files):
     raise ValueError("title ID must be exactly 9 letters or digits")
 
 
+def infer_save_marker(files, title_id):
+    markers = set()
+    for item in files:
+        parts = item.get("path", "").strip("/").split("/")
+        if (len(parts) != 6 or parts[:2] != ["user", "home"] or
+                parts[3] not in ("savedata", "savedata_prospero") or
+                parts[4].upper() != title_id or parts[5] != item.get("file")):
+            raise ValueError("save files do not share one PS4/PS5 title path")
+        markers.add(parts[3])
+    if len(markers) != 1:
+        raise ValueError("save files mix PS4 and PS5 paths")
+    return markers.pop()
+
+
 def create_metadata(output, user_id, title_id, entry_id, assets, user_name="user", manifest_output=None):
     user_id = validate_user(user_id, user_name)
     entry_id, upload_entry = load_manifest(assets, entry_id)
@@ -86,6 +100,7 @@ def create_metadata(output, user_id, title_id, entry_id, assets, user_name="user
     title_id = infer_title_id(title_id, files)
     if not re.fullmatch(r"[A-Z0-9]{9}", title_id):
         raise ValueError("title ID must be exactly 9 letters or digits")
+    save_marker = infer_save_marker(files, title_id)
     total_size = sum(int(item["size"]) for item in files)
     bu_size = max(int(item["size"]) for item in files)
     if total_size <= 0 or bu_size <= 0:
@@ -107,7 +122,7 @@ def create_metadata(output, user_id, title_id, entry_id, assets, user_name="user
             "INSERT INTO users_savedata_tbl VALUES (?, ?, ?, ?, ?, 1, 1, 0, ?)",
             (int(user_id, 16), title_id, title_id, total_size, bu_size, int(time.time())),
         )
-        save_path = f"/user/home/{user_id}/savedata_prospero/{title_id}/"
+        save_path = f"/user/home/{user_id}/{save_marker}/{title_id}/"
         db.execute(
             "INSERT INTO dir_entry_info_tbl VALUES (?, ?, 1, 3, 0, '', '', ?, ?, ?, 0)",
             (entry_id, save_path, total_size, total_size, total_size),
