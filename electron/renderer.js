@@ -7,6 +7,7 @@ for (const id of [
   'downloadBtn', 'downloadSelectedBtn', 'uploadBtn', 'finishBtn', 'cancelBtn', 'powerBtn', 'status', 'entries', 'log',
   'consoleSelect', 'discoverBtn', 'accountId', 'findAccountIdBtn', 'pairBtn', 'pairingState', 'preferIpv6', 'selectAllEntries', 'entryCount', 'powerModal',
 ]) controls[id] = byId(id);
+byId('pairingInstructions').hidden = !window.saveTransfer.pairingAvailable;
 let activeTransfer = null;
 let availableUsers = [];
 let availableEntries = [];
@@ -73,11 +74,14 @@ function applyConsoleProfile() {
 async function refreshPairingStatus() {
   const selected = controls.consoleSelect.selectedOptions[0];
   const identity = { hostId: selected?.dataset.hostId || '', systemVersion: selected?.dataset.firmware || '' };
-  const supported = Boolean(selected?.value) && identity.systemVersion === '14220000';
+  const supported = window.saveTransfer.pairingAvailable && Boolean(selected?.value) &&
+    identity.systemVersion === '14220000';
   controls.pairBtn.disabled = !supported || Boolean(activeTransfer) || browseSessionActive;
   controls.pairingState.textContent = supported
     ? 'Checking whether this PS5 has been paired…'
-    : 'One-time pairing is available for a discovered PS5 on firmware 14.22.';
+    : window.saveTransfer.pairingAvailable
+      ? 'One-time pairing is available for a discovered PS5 on firmware 14.22.'
+      : 'On macOS, use a PS4 USB backup or enter the decimal account ID.';
   if (!supported) return;
   try {
     const paired = await window.saveTransfer.pairingStatus(identity);
@@ -111,7 +115,7 @@ function busy(value) {
   controls.uploadBtn.disabled = value;
   controls.accountId.disabled = value || browseSessionActive;
   controls.findAccountIdBtn.disabled = value || browseSessionActive;
-  controls.pairBtn.disabled = value || browseSessionActive ||
+  controls.pairBtn.disabled = !window.saveTransfer.pairingAvailable || value || browseSessionActive ||
     controls.consoleSelect.selectedOptions[0]?.dataset.firmware !== '14220000';
   controls.cancelBtn.disabled = !value;
   controls.consoleSelect.disabled = value || browseSessionActive;

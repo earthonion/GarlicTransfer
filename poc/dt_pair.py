@@ -155,11 +155,32 @@ def validate_options(options):
     duration = int(options.get("duration", 180))
     if not 1 <= duration <= 600:
         raise ValueError("duration must be between 1 and 600 seconds")
-    return ps5_ip, system_version.upper(), oracle_host, oracle_port, destination, duration
+    run_as_uid = options.get("runAsUid")
+    run_as_gid = options.get("runAsGid")
+    if (run_as_uid is None) != (run_as_gid is None):
+        raise ValueError("runAsUid and runAsGid must be supplied together")
+    if run_as_uid is not None:
+        if (type(run_as_uid) is not int or type(run_as_gid) is not int
+                or not 0 < run_as_uid < 1 << 32 or not 0 <= run_as_gid < 1 << 32):
+            raise ValueError("invalid unprivileged user identity")
+    return (ps5_ip, system_version.upper(), oracle_host, oracle_port,
+            destination, duration, run_as_uid, run_as_gid)
+
+
+def drop_privileges(uid, gid):
+    """Retain privileged sockets, but write the pairing file as the app user."""
+    if uid is None:
+        return
+    if os.name != "posix" or os.geteuid() != 0:
+        raise PermissionError("pairing port binding did not gain the expected privileges")
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
 
 
 def pair(options, discovery_port=1006, command_port=1004, bind_ip=None):
-    ps5_ip, system_version, oracle_host, oracle_port, destination, duration = validate_options(options)
+    (ps5_ip, system_version, oracle_host, oracle_port,
+     destination, duration, run_as_uid, run_as_gid) = validate_options(options)
     bind_ip = bind_ip or local_ipv4_for(ps5_ip)
     deadline = time.monotonic() + duration
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as discovery, \
@@ -167,6 +188,7 @@ def pair(options, discovery_port=1006, command_port=1004, bind_ip=None):
         discovery.bind(("0.0.0.0", discovery_port))
         command.bind((bind_ip, command_port))
         command.listen(1)
+        drop_privileges(run_as_uid, run_as_gid)
         emit("status", message="Pairing listener ready. Select GarlicTransfer Pairing on the PS5.")
         while True:
             remaining = deadline - time.monotonic()

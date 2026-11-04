@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from poc.dt_pair import discovery_reply, pair, save_prefix, validate_options
+from poc.dt_pair import discovery_reply, drop_privileges, pair, save_prefix, validate_options
 from poc.dt_psk_client import command_header, recv_exact, send_record
 
 
@@ -35,9 +35,22 @@ class PairTests(unittest.TestCase):
         self.assertEqual(validate_options(options)[0:2], ("127.0.0.1", "14220000"))
         for change in ({"ps5Ip": "::1"}, {"systemVersion": "14.22"},
                        {"duration": 0}, {"oraclePort": 0}, {"prefixPath": ""},
-                       {"prefixPath": "relative-prefix.bin"}):
+                       {"prefixPath": "relative-prefix.bin"},
+                       {"runAsUid": 1000}, {"runAsUid": True, "runAsGid": 1000},
+                       {"runAsUid": 0, "runAsGid": 1000}):
             with self.subTest(change=change), self.assertRaises((ValueError, KeyError)):
                 validate_options({**options, **change})
+
+    def test_privileged_listener_drops_to_app_user_before_saving(self):
+        with patch("poc.dt_pair.os.name", "posix"), \
+             patch("poc.dt_pair.os.geteuid", return_value=0, create=True), \
+             patch("poc.dt_pair.os.setgroups", create=True) as setgroups, \
+             patch("poc.dt_pair.os.setgid", create=True) as setgid, \
+             patch("poc.dt_pair.os.setuid", create=True) as setuid:
+            drop_privileges(1001, 1002)
+        setgroups.assert_called_once_with([])
+        setgid.assert_called_once_with(1002)
+        setuid.assert_called_once_with(1001)
 
     def test_prefix_file_contains_only_32_bytes_and_replaces_atomically(self):
         with tempfile.TemporaryDirectory() as folder:

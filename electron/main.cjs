@@ -147,8 +147,11 @@ function startDownload(options) {
 
 function startPairing(options) {
   if (active) throw new Error('another transfer is already running');
+  if (process.platform === 'darwin') {
+    throw new Error('One-time pairing is not yet available on macOS; use a PS4 USB backup or the decimal account ID');
+  }
   if (net.isIP(options.clientHost) !== 4) throw new Error('Discover and select a PS5 IPv4 address first');
-  if (options.systemVersion !== '14220000') throw new Error('One-time pairing is currently verified only for PS5 14.22');
+  if (options.systemVersion !== '14220000') throw new Error('One-time pairing is currently implemented only for PS5 14.22');
   const prefixPath = pairingPrefixPath(app.getPath('userData'), options);
   fs.mkdirSync(path.dirname(prefixPath), { recursive: true, mode: 0o700 });
   active = { kind: 'pair', completed: false, process: null };
@@ -159,9 +162,17 @@ function startPairing(options) {
       if (!active) stopOracle();
       return;
     }
-    const child = spawn(pythonBin(), ['-u', '-m', 'poc.dt_pair', '-'], {
+    const needsRoot = process.platform === 'linux' && process.getuid() !== 0;
+    const venvPython = process.env.VIRTUAL_ENV && path.join(process.env.VIRTUAL_ENV, 'bin', 'python3');
+    const python = needsRoot && venvPython && fs.existsSync(venvPython) ? venvPython : pythonBin();
+    const command = needsRoot ? 'pkexec' : python;
+    const args = needsRoot
+      ? ['/usr/bin/env', `PYTHONPATH=${resourceRoot}`, python, '-u', '-m', 'poc.dt_pair', '-']
+      : ['-u', '-m', 'poc.dt_pair', '-'];
+    if (needsRoot) send('status', { message: 'Authenticate to bind the Data Transfer pairing ports.' });
+    const child = spawn(command, args, {
       cwd: workDir,
-      env: { ...process.env, PYTHONPATH: resourceRoot },
+      env: needsRoot ? process.env : { ...process.env, PYTHONPATH: resourceRoot },
     });
     session.process = child;
     child.stdin.end(`${JSON.stringify({
@@ -171,6 +182,7 @@ function startPairing(options) {
       oraclePort: Number(options.oraclePort || 9022),
       prefixPath,
       duration: 300,
+      ...(needsRoot ? { runAsUid: process.getuid(), runAsGid: process.getgid() } : {}),
     })}\n`);
     let buffer = '';
     child.stdout.on('data', (chunk) => {
