@@ -24,15 +24,42 @@
         <h2>Client console</h2>
         <label>Discovered consoles<select id="consoleSelect"><option value="">Discover and select a console</option></select></label>
         <button id="discoverBtn" type="button">Discover consoles</button>
-        <div class="pairing-option">
-          <button id="pairBtn" type="button" disabled>Pair this PS5 once (experimental)</button>
-          <span id="pairingState" class="hint">Discover a PS5 on firmware 14.22 to check pairing.</span>
+      </section>
+
+      <section id="consoleLink" class="panel console-link">
+        <div class="link-heading">
+          <h2>Link this console for save browsing</h2>
+          <span id="consoleLinkState" class="hint">Discover a console to check its saved link.</span>
         </div>
-        <p id="pairingInstructions" class="hint">Experimental Windows pairing, not yet verified on a live PS5: start here, then on the PS5 open Settings → System → System Software → Data Transfer and select “GarlicTransfer Pairing.” “Can’t transfer data” is expected. If the app confirms pairing, return to the home screen and browse saves. The captured identifier stays on this PC.</p>
-        <label>PSN account ID (optional, decimal)
-          <span class="file-row"><input id="accountId" inputmode="numeric" pattern="[0-9]*" autocomplete="off" spellcheck="false" placeholder="Used only for the first browse if metadata.db is absent"><button id="findAccountIdBtn" type="button">Find in PS4 USB backup</button></span>
-        </label>
-        <p class="hint">The verified first browse used a decimal PSN account ID. Enter it above, or read it from a PS4 USB backup; the USB picker has not been live-tested end to end. After a prior browse, local metadata supplies the ID automatically. It is not a PSN password.</p>
+        <div id="linkedConsole" class="linked-console" hidden>
+          <p id="linkedMessage"></p>
+          <button id="manageLinkBtn" type="button">Change link</button>
+        </div>
+        <div id="linkMethods">
+          <button id="keepLinkBtn" type="button" class="subtle" hidden>Keep current link</button>
+          <p class="hint">Choose one way to link the selected console. Console pairing saves a reusable 32-byte approval identifier on this PC. The USB and manual methods use your decimal PSN account ID (also called UID). Neither is your PSN password.</p>
+          <div class="link-methods">
+            <div class="link-method">
+              <h3>Pair from PS5 <span class="hint">experimental</span></h3>
+              <p id="pairingInstructions">Start pairing here. On the PS5, open Settings → System → System Software → Data Transfer, press Continue, then select “GarlicTransfer Pairing.” A “Can’t transfer data” message is expected. Return to the PS5 home screen after this app confirms the link.</p>
+              <button id="pairBtn" type="button" disabled>Start console pairing</button>
+              <span id="pairingState" class="hint">Discover a PS5 on firmware 14.22 to check pairing.</span>
+            </div>
+            <div class="link-method">
+              <h3>Use a PS4 USB backup</h3>
+              <p>Select the USB backup, its PS4/SAVEDATA folder, or a single account folder inside it. GarlicTransfer reads the account ID from the folder name.</p>
+              <button id="findAccountIdBtn" type="button">Find ID in USB backup</button>
+            </div>
+            <div class="link-method">
+              <h3>Enter ID manually</h3>
+              <label>Decimal PSN account ID (UID)
+                <input id="accountId" inputmode="numeric" pattern="[0-9]*" autocomplete="off" spellcheck="false" placeholder="Decimal digits, not online ID or password">
+              </label>
+              <button id="saveAccountIdBtn" type="button">Save ID for this console</button>
+              <button id="forgetAccountIdBtn" type="button" class="subtle" hidden>Forget saved ID</button>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="actions">
@@ -42,9 +69,25 @@
         <button id="cancelBtn" class="secondary" disabled>Cancel</button>
       </section>
 
+      <div class="action-guides">
+        <details>
+          <summary>How to browse console saves</summary>
+          <p>Discover and select your PS5, then link it above if prompted. Leave it on the home screen and choose Browse console saves. When the PS5 requests it, briefly press its physical power button until it beeps, then release. After the save list appears, choose what to download and finish the session.</p>
+        </details>
+        <details>
+          <summary>How to upload saves</summary>
+          <p>Choose Upload selected saves, select the destination user and a downloaded save, then follow Upload destination below. A source save folder must be a GarlicTransfer download in its original format; a standalone file cannot be uploaded.</p>
+        </details>
+      </div>
+
       <section id="uploadDestination" class="panel upload-inputs" hidden>
         <h2>Upload destination</h2>
-        <p class="upload-instructions">Select user/save(s), then on the console go to Settings → System → System Software → Data Transfer, press Continue, select “GarlicTransfer” from the found consoles, then select “Start transfer”. Delete ALL selected original saves before upload.</p>
+        <p class="upload-instructions">Select the destination user and save. Keep a backup, then delete the matching save from console storage to avoid a conflict. On the PS5, open Settings → System → System Software → Data Transfer, press Continue, select “GarlicTransfer,” then select “Start transfer.”</p>
+        <div class="local-save-picker">
+          <button id="chooseLocalSaveBtn" type="button">Add GarlicTransfer save folder…</button>
+          <button id="clearLocalSaveBtn" type="button" class="subtle" hidden>Use profile saves instead</button>
+          <span id="localSaveState" class="hint">Use a save downloaded by GarlicTransfer, or choose one from this console profile below. Arbitrary files are not supported.</span>
+        </div>
         <label id="userSelectLabel" hidden>Upload to user
           <select id="userSelect"></select>
         </label>
@@ -111,7 +154,7 @@
 
       <section class="panel settings-actions">
         <button id="settingsSave" class="primary">Save settings</button>
-        <p id="settingsStatus">Settings are stored in config.ini.</p>
+        <p id="settingsStatus">Connection settings are stored in config.ini. Console links are stored separately on this PC.</p>
       </section>
     </section>
   </main>

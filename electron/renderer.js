@@ -6,8 +6,9 @@ for (const id of [
   'userSelect', 'userSelectLabel', 'uploadSaveSelect', 'uploadSaveSelectLabel', 'confirmUploadBtn', 'sourcePort', 'dataPort', 'discoveryPort',
   'downloadBtn', 'downloadSelectedBtn', 'uploadBtn', 'finishBtn', 'cancelBtn', 'powerBtn', 'status', 'entries', 'log',
   'consoleSelect', 'discoverBtn', 'accountId', 'findAccountIdBtn', 'pairBtn', 'pairingState', 'preferIpv6', 'selectAllEntries', 'entryCount', 'powerModal',
+  'consoleLinkState', 'linkedConsole', 'linkedMessage', 'linkMethods', 'manageLinkBtn', 'keepLinkBtn', 'saveAccountIdBtn', 'forgetAccountIdBtn',
+  'chooseLocalSaveBtn', 'clearLocalSaveBtn', 'localSaveState',
 ]) controls[id] = byId(id);
-byId('pairingInstructions').hidden = !window.saveTransfer.pairingAvailable;
 let activeTransfer = null;
 let availableUsers = [];
 let availableEntries = [];
@@ -18,8 +19,90 @@ let pendingBrowserHost = null;
 let dataTransferArmedHost = null;
 let browseSessionActive = false;
 let profileRoot = null;
+let selectedHostId = '';
+let selectedLocalSave = null;
+let pairedConsole = false;
+let managingLink = false;
 const selectedEntryIds = new Set();
 const downloadedEntryIds = new Set();
+
+const accountIdKey = (hostId) => `garlictransfer.accountId.${hostId.toUpperCase()}`;
+
+function consoleHostId() {
+  const hostId = controls.consoleSelect.selectedOptions[0]?.dataset.hostId || '';
+  return /^[0-9a-f]{12}$/i.test(hostId) ? hostId.toUpperCase() : '';
+}
+
+function decimalAccountId(value) {
+  const raw = String(value).trim();
+  if (!/^\d+$/.test(raw) || BigInt(raw) >= (1n << 64n)) {
+    throw new Error('Enter the unsigned decimal PSN account ID (up to 20 digits), not an online ID or password.');
+  }
+  return BigInt(raw).toString(10);
+}
+
+function storedAccountId(hostId = consoleHostId()) {
+  if (!hostId) return '';
+  try {
+    const saved = localStorage.getItem(accountIdKey(hostId));
+    return saved ? decimalAccountId(saved) : '';
+  } catch {
+    return '';
+  }
+}
+
+function saveAccountId(value) {
+  const hostId = consoleHostId();
+  if (!hostId) throw new Error('Discover and select a console before saving its account ID.');
+  const accountId = decimalAccountId(value);
+  localStorage.setItem(accountIdKey(hostId), accountId);
+  controls.accountId.value = accountId;
+  managingLink = false;
+  renderLinkState();
+}
+
+function rememberAccountIdAfterBrowse() {
+  if (!controls.accountId.value.trim()) return;
+  try {
+    if (decimalAccountId(controls.accountId.value) === storedAccountId()) return;
+    saveAccountId(controls.accountId.value);
+  } catch (error) {
+    appendLog(`[account] could not save this console's account ID: ${error.message}`);
+  }
+}
+
+function renderLinkState() {
+  const hostId = consoleHostId();
+  const savedId = storedAccountId(hostId);
+  const linked = Boolean(hostId && (savedId || pairedConsole));
+  controls.linkedConsole.hidden = !linked || managingLink;
+  controls.linkMethods.hidden = linked && !managingLink;
+  controls.keepLinkBtn.hidden = !linked || !managingLink;
+  controls.forgetAccountIdBtn.hidden = !savedId;
+  controls.saveAccountIdBtn.disabled = !hostId || Boolean(activeTransfer) || browseSessionActive;
+  controls.findAccountIdBtn.disabled = !hostId || Boolean(activeTransfer) || browseSessionActive;
+  controls.manageLinkBtn.disabled = Boolean(activeTransfer) || browseSessionActive;
+  controls.pairBtn.disabled = !window.saveTransfer.pairingAvailable || !hostId ||
+    controls.consoleSelect.selectedOptions[0]?.dataset.firmware !== '14220000' ||
+    Boolean(activeTransfer) || browseSessionActive;
+  controls.consoleLinkState.textContent = !hostId
+    ? 'Discover a console to check its saved link.'
+    : linked && !managingLink
+      ? 'Ready to browse from the PS5 home screen.'
+      : linked
+        ? 'Choose a different linking method, or keep the current one.'
+        : 'Choose one linking method for this console.';
+  controls.linkedMessage.textContent = pairedConsole
+    ? 'This console is paired on this PC. Its approval identifier is saved for this console.'
+    : 'This console’s decimal PSN account ID is saved on this PC.';
+}
+
+function renderLocalSave() {
+  controls.clearLocalSaveBtn.hidden = !selectedLocalSave;
+  controls.localSaveState.textContent = selectedLocalSave
+    ? `Selected: ${selectedLocalSave.title} (${selectedLocalSave.kind} save) · ${(selectedLocalSave.sizeBytes / 0x100000).toFixed(1)} MiB · ${selectedLocalSave.saveDir}`
+    : 'Use a save downloaded by GarlicTransfer, or choose one from this console profile below. Arbitrary files are not supported.';
+}
 
 function options() {
   const clientHost = controls.consoleSelect.value;
@@ -67,7 +150,20 @@ function applyConsoleProfile() {
   controls.output.value = profilePath(root, profile);
   controls.assets.value = controls.output.value;
   controls.metadata.value = '';
-  controls.accountId.value = '';
+  const hostId = consoleHostId();
+  if (hostId !== selectedHostId) {
+    selectedLocalSave = null;
+    pendingUploadOptions = null;
+    availableUsers = [];
+    availableEntries = [];
+    byId('uploadDestination').hidden = true;
+    renderLocalSave();
+  }
+  selectedHostId = hostId;
+  controls.accountId.value = storedAccountId(hostId);
+  managingLink = false;
+  pairedConsole = false;
+  renderLinkState();
   refreshPairingStatus();
 }
 
@@ -76,22 +172,29 @@ async function refreshPairingStatus() {
   const identity = { hostId: selected?.dataset.hostId || '', systemVersion: selected?.dataset.firmware || '' };
   const supported = window.saveTransfer.pairingAvailable && Boolean(selected?.value) &&
     identity.systemVersion === '14220000';
-  controls.pairBtn.disabled = !supported || Boolean(activeTransfer) || browseSessionActive;
   controls.pairingState.textContent = supported
     ? 'Checking whether this PS5 has been paired…'
     : window.saveTransfer.pairingAvailable
       ? 'Experimental one-time pairing is available for a discovered PS5 on firmware 14.22.'
       : 'On Linux and macOS, use a PS4 USB backup or enter the decimal account ID.';
-  if (!supported) return;
+  if (!supported) {
+    pairedConsole = false;
+    renderLinkState();
+    return;
+  }
   try {
     const paired = await window.saveTransfer.pairingStatus(identity);
     if (controls.consoleSelect.selectedOptions[0] !== selected) return;
+    pairedConsole = Boolean(paired);
     controls.pairingState.textContent = paired
       ? 'Paired on this PC. Browse from the PS5 home screen.'
       : 'Not paired yet. Experimental pairing may let you browse without entering an account ID.';
+    renderLinkState();
   } catch (error) {
     if (controls.consoleSelect.selectedOptions[0] === selected) {
       controls.pairingState.textContent = `Could not check pairing: ${error.message}`;
+      pairedConsole = false;
+      renderLinkState();
     }
   }
 }
@@ -114,13 +217,13 @@ function busy(value) {
   controls.downloadBtn.disabled = value;
   controls.uploadBtn.disabled = value;
   controls.accountId.disabled = value || browseSessionActive;
-  controls.findAccountIdBtn.disabled = value || browseSessionActive;
-  controls.pairBtn.disabled = !window.saveTransfer.pairingAvailable || value || browseSessionActive ||
-    controls.consoleSelect.selectedOptions[0]?.dataset.firmware !== '14220000';
+  controls.chooseLocalSaveBtn.disabled = value || browseSessionActive;
+  controls.clearLocalSaveBtn.disabled = value || browseSessionActive;
   controls.cancelBtn.disabled = !value;
   controls.consoleSelect.disabled = value || browseSessionActive;
   controls.discoverBtn.disabled = value || browseSessionActive;
   if (!value) hidePowerModal();
+  renderLinkState();
   updateSelection();
 }
 
@@ -271,6 +374,7 @@ async function startUploadSource() {
     userId: selectedUser.value,
     userName: selectedUser.dataset.name || 'user',
     entryIds,
+    ...(selectedLocalSave ? { localSave: selectedLocalSave } : {}),
   };
   activeTransfer = 'upload';
   busy(true);
@@ -297,24 +401,31 @@ function showUploadConfirmation() {
     controls.userSelect.appendChild(option);
   }
   controls.uploadSaveSelect.replaceChildren();
-  const downloadedEntries = availableEntries.filter((entry) => entry.downloaded);
-  for (const entry of downloadedEntries) {
+  if (selectedLocalSave) {
     const option = document.createElement('option');
-    option.value = entry.id;
-    option.textContent = `${entry.name || entry.title} (${entry.title}) — ${entry.owner} — entry ${entry.id}`;
+    option.value = selectedLocalSave.entryId;
+    option.textContent = `${selectedLocalSave.title} — selected PC save folder`;
+    option.selected = true;
     controls.uploadSaveSelect.appendChild(option);
+  } else {
+    for (const entry of availableEntries.filter((item) => item.downloaded)) {
+      const option = document.createElement('option');
+      option.value = entry.id;
+      option.textContent = `${entry.name || entry.title} (${entry.title}) — ${entry.owner} — entry ${entry.id}`;
+      controls.uploadSaveSelect.appendChild(option);
+    }
   }
-  if (!availableUsers.length || !downloadedEntries.length) {
+  if (!availableUsers.length || !controls.uploadSaveSelect.options.length) {
     controls.userSelectLabel.hidden = true;
     controls.uploadSaveSelectLabel.hidden = true;
     controls.confirmUploadBtn.hidden = true;
-    status('No downloaded save files are available. Download the saves before uploading them.');
+    status('No compatible save folder is selected. Download a save, or add an existing GarlicTransfer save folder.');
     return;
   }
   controls.userSelectLabel.hidden = false;
   controls.uploadSaveSelectLabel.hidden = false;
   controls.confirmUploadBtn.hidden = false;
-  status('Select one user and one or more saves. Delete ALL selected original saves on the client before upload.');
+  status('Select the target user and save. Delete the matching original save on the client before upload.');
 }
 
 async function startUpload() {
@@ -330,6 +441,7 @@ async function startUpload() {
     dataTransferArmedHost = null;
   }
   current.entryIds = [];
+  if (selectedLocalSave) current.localSave = selectedLocalSave;
   pendingUploadOptions = current;
   const hasExplicitMetadata = Boolean(current.metadata);
   const previousMetadata = current.metadata || `${current.output}/metadata.db`;
@@ -413,7 +525,7 @@ controls.discoverBtn.addEventListener('click', async () => {
 controls.settingsSave.addEventListener('click', async () => {
   const current = options();
   await window.saveTransfer.saveSettings({ ...current, output: profileRoot || current.output });
-  controls.settingsStatus.textContent = 'Settings saved to config.ini.';
+  controls.settingsStatus.textContent = 'Connection settings saved to config.ini. Console links remain stored separately on this PC.';
 });
 
 async function loadSettings() {
@@ -431,12 +543,43 @@ async function loadSettings() {
 controls.consoleSelect.addEventListener('change', applyConsoleProfile);
 loadSettings();
 
+controls.manageLinkBtn.addEventListener('click', () => {
+  managingLink = true;
+  renderLinkState();
+});
+controls.keepLinkBtn.addEventListener('click', () => {
+  managingLink = false;
+  renderLinkState();
+});
+controls.saveAccountIdBtn.addEventListener('click', () => {
+  try {
+    saveAccountId(controls.accountId.value);
+    status('PSN account ID saved for this console. Browse from its home screen.');
+  } catch (error) {
+    status(`Could not save account ID: ${error.message}`);
+  }
+});
+controls.accountId.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    controls.saveAccountIdBtn.click();
+  }
+});
+controls.forgetAccountIdBtn.addEventListener('click', () => {
+  const hostId = consoleHostId();
+  if (!hostId) return;
+  localStorage.removeItem(accountIdKey(hostId));
+  controls.accountId.value = '';
+  managingLink = false;
+  renderLinkState();
+  status('Saved account ID removed for this console.');
+});
 controls.findAccountIdBtn.addEventListener('click', async () => {
   try {
     const accountId = await window.saveTransfer.chooseAccountId();
     if (accountId !== null) {
-      controls.accountId.value = accountId;
-      status('PSN account ID found in the PS4 USB backup folder. You can browse this console from its home screen.');
+      saveAccountId(accountId);
+      status('PSN account ID found in the PS4 USB backup and saved for this console. Browse from its home screen.');
     }
   } catch (error) {
     status(`Could not find an account ID: ${error.message}`);
@@ -472,6 +615,30 @@ controls.selectAllEntries.addEventListener('change', () => {
 });
 controls.uploadBtn.addEventListener('click', startUpload);
 controls.confirmUploadBtn.addEventListener('click', startUploadSource);
+controls.chooseLocalSaveBtn.addEventListener('click', async () => {
+  try {
+    const chosen = await window.saveTransfer.chooseUploadSave();
+    if (!chosen || chosen.cancelled) return;
+    if (chosen.error) throw new Error(chosen.error);
+    if (!chosen.saveDir || !Number.isInteger(Number(chosen.entryId)) ||
+        Number(chosen.entryId) < 1 || Number(chosen.entryId) > 0xffffffff) {
+      throw new Error('The chosen folder is not a GarlicTransfer save download.');
+    }
+    selectedLocalSave = chosen;
+    if (pendingUploadOptions) pendingUploadOptions.localSave = chosen;
+    renderLocalSave();
+    if (availableUsers.length) showUploadConfirmation();
+    else status('Save folder selected. Fetch the destination console’s save list before uploading.');
+  } catch (error) {
+    status(`Could not add save folder: ${error.message}`);
+  }
+});
+controls.clearLocalSaveBtn.addEventListener('click', () => {
+  selectedLocalSave = null;
+  if (pendingUploadOptions) delete pendingUploadOptions.localSave;
+  renderLocalSave();
+  if (availableUsers.length) showUploadConfirmation();
+});
 controls.finishBtn.addEventListener('click', async () => {
   if (!browseSessionActive || activeTransfer) return;
   if (!window.confirm('Close Data Transfer and reboot the console now?')) return;
@@ -522,9 +689,12 @@ window.saveTransfer.onEvent((event) => {
   if (event.type === 'log') appendLog(event.message);
   if (event.type === 'paired') {
     controls.accountId.value = '';
+    pairedConsole = true;
+    managingLink = false;
     activeTransfer = null;
     busy(false);
     controls.pairingState.textContent = 'Paired on this PC. Browse from the PS5 home screen.';
+    renderLinkState();
     status(event.message);
   }
   if (event.type === 'powerRequired') showPowerModal();
@@ -552,6 +722,7 @@ window.saveTransfer.onEvent((event) => {
     renderEntries();
   }
   if (event.type === 'ready') {
+    rememberAccountIdAfterBrowse();
     browseSessionActive = true;
     dataTransferArmedHost = browserHost;
     activeTransfer = null;
@@ -567,6 +738,7 @@ window.saveTransfer.onEvent((event) => {
     controls.powerBtn.hidden = true;
   }
   if (event.type === 'done' && event.metadataOnly) {
+    rememberAccountIdAfterBrowse();
     const mode = activeTransfer;
     browseSessionActive = false;
     dataTransferArmedHost = event.consoleDisconnected ? null : browserHost;
