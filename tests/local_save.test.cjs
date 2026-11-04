@@ -39,6 +39,7 @@ test('accepts an intact downloaded save folder and rejects changed bytes', async
     const inspected = await inspectLocalSave(folder);
     assert.equal(inspected.entryId, 108);
     assert.equal(inspected.title, 'CUSA09303');
+    assert.equal(inspected.owner, 'abcdef12');
     assert.equal(inspected.kind, 'PS4');
     assert.equal(inspected.sizeBytes, content.length);
     assert.equal(inspected.sourceMetadata, path.join(root, 'metadata.db'));

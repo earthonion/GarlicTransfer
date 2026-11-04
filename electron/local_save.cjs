@@ -97,6 +97,7 @@ async function inspectLocalSave(folder) {
     saveDir,
     entryId,
     title: identity.title,
+    owner: identity.owner,
     kind: identity.marker === 'savedata' ? 'PS4' : 'PS5',
     sizeBytes,
     sourceMetadata: fs.existsSync(sourceMetadata) ? sourceMetadata : null,

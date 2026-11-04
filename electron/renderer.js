@@ -363,6 +363,7 @@ async function startDownload(entryIds) {
 }
 
 async function startUploadSource() {
+  if (!validateUploadSelection()) return;
   const selectedUser = controls.userSelect.selectedOptions[0];
   const entryIds = [...controls.uploadSaveSelect.selectedOptions].map((option) => Number(option.value));
   if (!selectedUser || !entryIds.length) {
@@ -391,6 +392,35 @@ async function startUploadSource() {
   }
 }
 
+function validateUploadSelection(alignOwner = false) {
+  const selectedSaves = [...controls.uploadSaveSelect.selectedOptions];
+  const owners = new Set(selectedSaves.map((option) => option.dataset.owner?.toLowerCase()));
+  let message;
+  if (!selectedSaves.length) {
+    message = 'Select at least one save to upload.';
+  } else if (owners.has(undefined) || owners.size !== 1) {
+    message = 'Select saves belonging to one PS5 user. Saves from different users cannot be combined.';
+  } else {
+    const [owner] = owners;
+    const matchingUser = [...controls.userSelect.options].find((option) => option.value.toLowerCase() === owner);
+    if (!matchingUser) {
+      message = `Save owner ${owner} is not in this console profile. Browse the matching console first.`;
+    } else {
+      if (alignOwner) controls.userSelect.value = matchingUser.value;
+      const selectedUser = controls.userSelect.selectedOptions[0];
+      message = selectedUser?.value.toLowerCase() === owner
+        ? `Ready to upload ${selectedSaves.length} save(s) for ${matchingUser.dataset.name} (${owner}).`
+        : `Save owner ${owner} differs from the selected target user. Select ${matchingUser.dataset.name} (${owner}).`;
+      controls.confirmUploadBtn.disabled = selectedUser?.value.toLowerCase() !== owner;
+      status(message);
+      return !controls.confirmUploadBtn.disabled;
+    }
+  }
+  controls.confirmUploadBtn.disabled = true;
+  status(message);
+  return false;
+}
+
 function showUploadConfirmation() {
   controls.userSelect.replaceChildren();
   for (const user of availableUsers) {
@@ -404,6 +434,7 @@ function showUploadConfirmation() {
   if (selectedLocalSave) {
     const option = document.createElement('option');
     option.value = selectedLocalSave.entryId;
+    option.dataset.owner = selectedLocalSave.owner;
     option.textContent = `${selectedLocalSave.title} — selected PC save folder`;
     option.selected = true;
     controls.uploadSaveSelect.appendChild(option);
@@ -411,6 +442,7 @@ function showUploadConfirmation() {
     for (const entry of availableEntries.filter((item) => item.downloaded)) {
       const option = document.createElement('option');
       option.value = entry.id;
+      option.dataset.owner = entry.owner;
       option.textContent = `${entry.name || entry.title} (${entry.title}) — ${entry.owner} — entry ${entry.id}`;
       controls.uploadSaveSelect.appendChild(option);
     }
@@ -425,8 +457,11 @@ function showUploadConfirmation() {
   controls.userSelectLabel.hidden = false;
   controls.uploadSaveSelectLabel.hidden = false;
   controls.confirmUploadBtn.hidden = false;
-  status('Select the target user and save. Delete the matching original save on the client before upload.');
+  validateUploadSelection(Boolean(selectedLocalSave));
 }
+
+controls.uploadSaveSelect.addEventListener('change', () => validateUploadSelection(true));
+controls.userSelect.addEventListener('change', () => validateUploadSelection());
 
 async function startUpload() {
   const current = options();
