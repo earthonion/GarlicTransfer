@@ -2,8 +2,9 @@
 """Pair once with a PS5 Data Transfer request, without starting a transfer.
 
 The console sends its own 0x91 request when the user selects this advertised
-source in Data Transfer. Only the first 32 bytes are retained. In particular,
-this listener never answers the encrypted request or opens the data port.
+source in Data Transfer. The console ID is checked and only the first 32 bytes
+are retained. This listener never answers the encrypted request or opens the
+data port.
 """
 
 import ipaddress
@@ -112,7 +113,7 @@ def receive_prefix(client, oracle_host, oracle_port, deadline):
             raise ValueError("invalid Data Transfer request length")
         body.extend(chunk)
         sequence += 1
-    return bytes(body[:PREFIX_SIZE])
+    return bytes(body[:PREFIX_SIZE]), bytes(body[32:38])
 
 
 def save_prefix(prefix, destination):
@@ -142,6 +143,9 @@ def validate_options(options):
     if not isinstance(options, dict):
         raise ValueError("pairing options must be a JSON object")
     ps5_ip = str(ipaddress.IPv4Address(options["ps5Ip"]))
+    host_id = options["hostId"]
+    if not isinstance(host_id, str) or not re.fullmatch(r"[0-9a-fA-F]{12}", host_id):
+        raise ValueError("hostId must be 12 hexadecimal digits from discovery")
     system_version = str(options["systemVersion"])
     if not re.fullmatch(r"[0-9a-fA-F]{8}", system_version):
         raise ValueError("systemVersion must be eight hexadecimal digits from discovery")
@@ -155,32 +159,11 @@ def validate_options(options):
     duration = int(options.get("duration", 180))
     if not 1 <= duration <= 600:
         raise ValueError("duration must be between 1 and 600 seconds")
-    run_as_uid = options.get("runAsUid")
-    run_as_gid = options.get("runAsGid")
-    if (run_as_uid is None) != (run_as_gid is None):
-        raise ValueError("runAsUid and runAsGid must be supplied together")
-    if run_as_uid is not None:
-        if (type(run_as_uid) is not int or type(run_as_gid) is not int
-                or not 0 < run_as_uid < 1 << 32 or not 0 <= run_as_gid < 1 << 32):
-            raise ValueError("invalid unprivileged user identity")
-    return (ps5_ip, system_version.upper(), oracle_host, oracle_port,
-            destination, duration, run_as_uid, run_as_gid)
-
-
-def drop_privileges(uid, gid):
-    """Retain privileged sockets, but write the pairing file as the app user."""
-    if uid is None:
-        return
-    if os.name != "posix" or os.geteuid() != 0:
-        raise PermissionError("pairing port binding did not gain the expected privileges")
-    os.setgroups([])
-    os.setgid(gid)
-    os.setuid(uid)
+    return ps5_ip, host_id.lower(), system_version.upper(), oracle_host, oracle_port, destination, duration
 
 
 def pair(options, discovery_port=1006, command_port=1004, bind_ip=None):
-    (ps5_ip, system_version, oracle_host, oracle_port,
-     destination, duration, run_as_uid, run_as_gid) = validate_options(options)
+    ps5_ip, host_id, system_version, oracle_host, oracle_port, destination, duration = validate_options(options)
     bind_ip = bind_ip or local_ipv4_for(ps5_ip)
     deadline = time.monotonic() + duration
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as discovery, \
@@ -188,7 +171,6 @@ def pair(options, discovery_port=1006, command_port=1004, bind_ip=None):
         discovery.bind(("0.0.0.0", discovery_port))
         command.bind((bind_ip, command_port))
         command.listen(1)
-        drop_privileges(run_as_uid, run_as_gid)
         emit("status", message="Pairing listener ready. Select GarlicTransfer Pairing on the PS5.")
         while True:
             remaining = deadline - time.monotonic()
@@ -211,7 +193,9 @@ def pair(options, discovery_port=1006, command_port=1004, bind_ip=None):
                         if address[0] != ps5_ip:
                             continue
                         emit("status", message="PS5 connected; reading its Data Transfer request.")
-                        prefix = receive_prefix(client, oracle_host, oracle_port, deadline)
+                        prefix, observed_host_id = receive_prefix(client, oracle_host, oracle_port, deadline)
+                    if observed_host_id != bytes.fromhex(host_id):
+                        raise ValueError("Data Transfer request did not match the selected console")
                     save_prefix(prefix, destination)
                     emit("paired")
                     return

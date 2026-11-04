@@ -5,7 +5,7 @@
 <policyconfig>
   <action id="com.earthonion.garlictransfer.bind-privileged-ports">
     <description>GarlicTransfer needs to bind Data Transfer ports 1004–1006</description>
-    <message>GarlicTransfer needs to bind privileged ports for save upload or console pairing</message>
+    <message>GarlicTransfer needs to bind privileged ports for save upload</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>

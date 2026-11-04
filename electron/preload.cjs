@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('saveTransfer', {
-  pairingAvailable: process.platform !== 'darwin',
+  pairingAvailable: process.platform === 'win32',
   chooseOutput: () => ipcRenderer.invoke('dialog:output'),
   chooseMetadata: () => ipcRenderer.invoke('dialog:metadata'),
   chooseAssets: () => ipcRenderer.invoke('dialog:assets'),

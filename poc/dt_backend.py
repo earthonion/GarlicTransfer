@@ -196,8 +196,11 @@ def download(options):
                     f"Power request used hardware ID {hardware}; set Client hardware ID manually to 1, 2, or 3 to match the target."
                 )
             if result != 0:
-                hint = (" Check that the account ID or pairing belongs to this console."
-                        if result == 0x11 and firmware_version == 0x14220000 else "")
+                hint = ""
+                if result == 0x11 and firmware_version == 0x14220000:
+                    hint = (" Stored pairing may be for a different PSN user; pair this PS5 again."
+                            if options.get("approvalPrefixPath") and not str(options.get("accountId", "")).strip()
+                            else " Check that the decimal PSN account ID belongs to this console user.")
                 raise RuntimeError(f"client rejected Data Transfer with result {result:#x}.{hint}")
 
         emit("status", step=3, message="Downloading save metadata.")

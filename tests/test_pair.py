@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from poc.dt_pair import discovery_reply, drop_privileges, pair, save_prefix, validate_options
+from poc.dt_pair import discovery_reply, pair, save_prefix, validate_options
 from poc.dt_psk_client import command_header, recv_exact, send_record
 
 
@@ -28,29 +28,16 @@ class PairTests(unittest.TestCase):
 
     def test_validation_rejects_bad_target_or_version(self):
         options = {
-            "ps5Ip": "127.0.0.1", "systemVersion": "14220000",
+            "ps5Ip": "127.0.0.1", "hostId": "202122232425", "systemVersion": "14220000",
             "oracleHost": "127.0.0.1", "oraclePort": 9022,
             "prefixPath": str(Path(tempfile.gettempdir()) / "pairing-prefix.bin"), "duration": 180,
         }
-        self.assertEqual(validate_options(options)[0:2], ("127.0.0.1", "14220000"))
-        for change in ({"ps5Ip": "::1"}, {"systemVersion": "14.22"},
+        self.assertEqual(validate_options(options)[0:3], ("127.0.0.1", "202122232425", "14220000"))
+        for change in ({"ps5Ip": "::1"}, {"hostId": "not-a-host"}, {"systemVersion": "14.22"},
                        {"duration": 0}, {"oraclePort": 0}, {"prefixPath": ""},
-                       {"prefixPath": "relative-prefix.bin"},
-                       {"runAsUid": 1000}, {"runAsUid": True, "runAsGid": 1000},
-                       {"runAsUid": 0, "runAsGid": 1000}):
+                       {"prefixPath": "relative-prefix.bin"}):
             with self.subTest(change=change), self.assertRaises((ValueError, KeyError)):
                 validate_options({**options, **change})
-
-    def test_privileged_listener_drops_to_app_user_before_saving(self):
-        with patch("poc.dt_pair.os.name", "posix"), \
-             patch("poc.dt_pair.os.geteuid", return_value=0, create=True), \
-             patch("poc.dt_pair.os.setgroups", create=True) as setgroups, \
-             patch("poc.dt_pair.os.setgid", create=True) as setgid, \
-             patch("poc.dt_pair.os.setuid", create=True) as setuid:
-            drop_privileges(1001, 1002)
-        setgroups.assert_called_once_with([])
-        setgid.assert_called_once_with(1002)
-        setuid.assert_called_once_with(1001)
 
     def test_prefix_file_contains_only_32_bytes_and_replaces_atomically(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -89,7 +76,7 @@ class PairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             destination = Path(folder) / "pairing-prefix.bin"
             options = {
-                "ps5Ip": "127.0.0.1", "systemVersion": "14220000",
+                "ps5Ip": "127.0.0.1", "hostId": "202122232425", "systemVersion": "14220000",
                 "oracleHost": "127.0.0.1", "oraclePort": oracle_port,
                 "prefixPath": str(destination), "duration": 5,
             }
@@ -139,6 +126,41 @@ class PairTests(unittest.TestCase):
             self.assertNotIn("error", result)
             self.assertEqual(destination.read_bytes(), prefix)
             self.assertEqual(events[-1][0], "paired")
+
+    def test_mismatched_console_request_does_not_save_pairing(self):
+        discovery_port = unused_port(socket.SOCK_DGRAM)
+        command_port = unused_port(socket.SOCK_STREAM)
+        ready = threading.Event()
+        result = {}
+        with tempfile.TemporaryDirectory() as folder:
+            destination = Path(folder) / "pairing-prefix.bin"
+            options = {
+                "ps5Ip": "127.0.0.1", "hostId": "202122232425",
+                "systemVersion": "14220000", "oracleHost": "127.0.0.1",
+                "oraclePort": 9022, "prefixPath": str(destination), "duration": 5,
+            }
+
+            def emit(kind, **values):
+                if kind == "status" and "ready" in values.get("message", ""):
+                    ready.set()
+
+            def run_pair():
+                try:
+                    pair(options, discovery_port, command_port, bind_ip="127.0.0.1")
+                except Exception as exc:
+                    result["error"] = exc
+
+            with patch("poc.dt_pair.emit", emit), \
+                 patch("poc.dt_pair.receive_prefix", return_value=(bytes(32), bytes.fromhex("000000000001"))):
+                worker = threading.Thread(target=run_pair, daemon=True)
+                worker.start()
+                self.assertTrue(ready.wait(2))
+                with socket.create_connection(("127.0.0.1", command_port), timeout=2):
+                    pass
+                worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertIsInstance(result.get("error"), ValueError)
+            self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":

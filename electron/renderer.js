@@ -81,7 +81,7 @@ async function refreshPairingStatus() {
     ? 'Checking whether this PS5 has been paired…'
     : window.saveTransfer.pairingAvailable
       ? 'One-time pairing is available for a discovered PS5 on firmware 14.22.'
-      : 'On macOS, use a PS4 USB backup or enter the decimal account ID.';
+      : 'On Linux and macOS, use a PS4 USB backup or enter the decimal account ID.';
   if (!supported) return;
   try {
     const paired = await window.saveTransfer.pairingStatus(identity);
