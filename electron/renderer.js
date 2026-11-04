@@ -457,7 +457,7 @@ function showUploadConfirmation() {
   controls.userSelectLabel.hidden = false;
   controls.uploadSaveSelectLabel.hidden = false;
   controls.confirmUploadBtn.hidden = false;
-  validateUploadSelection(Boolean(selectedLocalSave));
+  validateUploadSelection(true);
 }
 
 controls.uploadSaveSelect.addEventListener('change', () => validateUploadSelection(true));

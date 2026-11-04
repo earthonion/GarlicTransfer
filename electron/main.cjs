@@ -90,6 +90,7 @@ async function ensureOracle(options) {
 
 function stopActive() {
   if (active && active.powerTimer) clearTimeout(active.powerTimer);
+  if (active && active.completionTimer) clearTimeout(active.completionTimer);
   if (active && active.process && active.process.exitCode === null) {
     if (active.kind === 'upload' && active.process.stdin.writable) active.process.stdin.end();
     active.process.kill();
@@ -372,7 +373,13 @@ function startUpload(options) {
         .some((port) => Number(port) < 1024);
     const python = pythonBin();
     let command = python;
-    let args = ['-u', '-m', 'poc.dt_source'];
+    let args = [
+      '-u', '-m', 'poc.dt_source',
+      '--oracle-host', options.oracleHost,
+      '--oracle-port', String(options.oraclePort || 9022),
+      '--client-host', options.clientHost,
+      '--system-version', options.systemVersion,
+    ];
     let environment = { ...process.env, PYTHONPATH: resourceRoot, ...sourceEnvironment };
     if (needsRoot) {
       command = 'pkexec';
@@ -380,6 +387,10 @@ function startUpload(options) {
         '/usr/bin/env', `PYTHONPATH=${resourceRoot}`,
         ...Object.entries(sourceEnvironment).map(([name, value]) => `${name}=${value}`),
         python, '-u', '-m', 'poc.dt_source',
+        '--oracle-host', options.oracleHost,
+        '--oracle-port', String(options.oraclePort || 9022),
+        '--client-host', options.clientHost,
+        '--system-version', options.systemVersion,
       ];
       environment = process.env;
       send('log', { message: '[privilege] authenticate to bind Data Transfer ports 1004–1006' });
@@ -397,7 +408,7 @@ function startUpload(options) {
         if (!line) continue;
         send('log', { message: line });
         if (line.includes("type 'power'")) {
-          send('status', { step: 3, message: 'Sending the source power signal automatically in 1 second.' });
+          send('status', { step: 3, message: 'Sending the PC source-console power signal automatically in 1 second.' });
           const session = active;
           session.powerTimer = setTimeout(() => {
             if (active === session && session.process && session.process.exitCode === null) {
@@ -406,11 +417,14 @@ function startUpload(options) {
             }
           }, 1000);
         }
-        if (line.toLowerCase().includes('cmd=0xb3')) {
-          session.completed = true;
-          send('done', { message: 'Save upload completed. The client may reboot to finish.' });
-          stopActive();
-          return;
+        if (line.includes('[final] completion response sent') && !session.completionTimer) {
+          send('status', { step: 3, message: 'Final response sent; waiting for the PS5 to finish.' });
+          session.completionTimer = setTimeout(() => {
+            if (active !== session) return;
+            session.completed = true;
+            send('done', { message: 'Transfer response sent. Check the PS5 for the final result.' });
+            stopActive();
+          }, 15000);
         }
       }
     });

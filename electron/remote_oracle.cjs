@@ -78,6 +78,7 @@ async function startRemoteOracle({ serverUrl, workerKey, onLog }) {
       const clientValue = input.subarray(0, 16).toString('hex');
       const serverValue = input.subarray(16, 32).toString('hex');
       (async () => {
+        onLog('[oracle] local transfer source requested a PPR derivation');
         const jobId = await submitDerivation(serverUrl, workerKey, clientValue, serverValue);
         onLog(`[oracle] submitted PPR job ${jobId}`);
         const result = await derivationResult(serverUrl, workerKey, jobId, onLog);

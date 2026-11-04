@@ -28,6 +28,10 @@ class Tee:
         self.stream.flush()
 
 
+def log_thread_exception(args):
+    print(f"[thread] {args.thread.name}: {args.exc_type.__name__}: {args.exc_value}", flush=True)
+
+
 COMMAND_STATE = {"lock": threading.Lock(), "active": False, "sequence": 0}
 POWER_EVENT = threading.Event()
 
@@ -58,7 +62,8 @@ def send_command_record(sock, key, nonce, sequence, plaintext):
 def interactive_console():
     while True:
         try:
-            line = input("[dt] ").strip()
+            prompt = "" if os.environ.get("DT_EXIT_ON_EOF") == "1" else "[dt] "
+            line = input(prompt).strip()
         except EOFError:
             if os.environ.get("DT_EXIT_ON_EOF") == "1":
                 os._exit(0)
@@ -75,7 +80,7 @@ def interactive_console():
                     print(entry)
         elif line == "power":
             POWER_EVENT.set()
-            print("[dt] power-button simulation signalled")
+            print("[power] PC source-console button signal sent", flush=True)
         elif line.startswith("submit "):
             try:
                 submit_packet(bytes.fromhex(line.split(maxsplit=1)[1]))
@@ -107,13 +112,37 @@ COMMAND_PORT = int(os.environ.get("DT_PORT", "1004"))
 DATA_PORT = int(os.environ.get("DT_DATA_PORT", str(COMMAND_PORT + 1)))
 
 
+def route_address_for_client(client_host):
+    """Advertise the local IPv4 address used to reach the selected PS5."""
+    client = ipaddress.IPv4Address(client_host)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect((str(client), 1006))
+        local = ipaddress.IPv4Address(probe.getsockname()[0])
+    return ipaddress.IPv6Address(f"::ffff:{local}").packed
+
+
+def system_version_bytes(value):
+    if len(value) != 8 or not value.isascii() or not value.isdigit():
+        raise ValueError("system version must be eight digits")
+    return value.encode("ascii")
+
+
+def selected_client(address, client_host):
+    if not client_host:
+        return True
+    peer = ipaddress.ip_address(address[0])
+    if isinstance(peer, ipaddress.IPv6Address) and peer.ipv4_mapped:
+        peer = peer.ipv4_mapped
+    return peer == ipaddress.ip_address(client_host)
+
+
 def derive_session(sock, oracle_host, oracle_port, client_value, server_value):
     if sock.family == socket.AF_INET6:
         return derive_keys(client_value, server_value)
     return derive_with_oracle(oracle_host, oracle_port, client_value, server_value)
 
 
-def discovery_server(port, ipv6=False):
+def discovery_server(port, ipv6=False, client_host=None):
     family = socket.AF_INET6 if ipv6 else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -121,6 +150,8 @@ def discovery_server(port, ipv6=False):
     print(f"[ddp] listening on UDP {port}", flush=True)
     while True:
         data, address = sock.recvfrom(4096)
+        if not selected_client(address, client_host):
+            continue
         command = data.split(b" ", 1)[0]
         print(f"[ddp] {address[0]}: {command.decode(errors='replace')}", flush=True)
         if command == b"SRCH":
@@ -149,7 +180,7 @@ def discovery_server(port, ipv6=False):
 
 def console_info(hardware, product_code, np_env, version_a, version_b):
     body = bytearray(72)
-    body[:6] = bytes.fromhex("5c96661f7c1a")
+    body[:6] = bytes.fromhex(HOST_ID.decode("ascii"))
     body[6] = 1
     struct.pack_into("<I", body, 8, hardware)
     struct.pack_into("<I", body, 12, product_code)
@@ -161,6 +192,18 @@ def console_info(hardware, product_code, np_env, version_a, version_b):
     struct.pack_into("<I", body, 44, version_b)
     body[48:64] = DATA_ADDRESS
     return bytes(body)
+
+
+def console_info_for_power_request(body):
+    if len(body) < 88:
+        raise ValueError("power request is shorter than 88 bytes")
+    return console_info(
+        struct.unpack_from("<I", body, 44)[0],
+        struct.unpack_from("<I", body, 48)[0],
+        body[56:72],
+        struct.unpack_from("<I", body, 76)[0],
+        struct.unpack_from("<I", body, 84)[0],
+    )
 
 
 def recv_body(sock, key, nonce_prefix, sequence, size):
@@ -195,6 +238,7 @@ def send_save_chunks(sock, key, nonce, sequence, file_type, file_id):
                     while chunk := stream.read(0x200000):
                         send_record(sock, key, nonce, sequence, chunk)
                         sequence += 1
+            print(f"[data] GFP5 file sent id={file_id} name={entry['file']}", flush=True)
         final_header = bytes.fromhex(save["final_header"])
     else:
         print(f"[data] GFP5 id={file_id} type={file_type} noent", flush=True)
@@ -204,6 +248,7 @@ def send_save_chunks(sock, key, nonce, sequence, file_type, file_id):
         final_header[274] = 1
         final_header = bytes(final_header)
     send_record(sock, key, nonce, sequence, final_header)
+    print(f"[data] GFP5 terminator sent id={file_id} type={file_type}", flush=True)
     return sequence + 1
 
 
@@ -224,13 +269,17 @@ def user_registry_value(body):
 def serve_command(sock, oracle_host, oracle_port):
     server_value = os.urandom(16)
     sock.sendall(server_value + bytes(48))
+    print("[ae] source hello sent; waiting for PS5 hello", flush=True)
     client_value = recv_exact(sock, 64)[:16]
+    print("[ae] PS5 hello received; deriving channel keys", flush=True)
+    sock.settimeout(310)
     recv_key, send_key, recv_nonce, send_nonce = derive_session(
         sock, oracle_host, oracle_port, client_value, server_value
     )
+    print("[ae] channel keys derived; waiting for completion", flush=True)
     COMMAND_STATE.update(sock=sock, key=send_key, nonce=send_nonce, active=True, sequence=0)
     completion = recv_record(sock, recv_key, recv_nonce, 0)
-    print(f"[ae] completion: {completion.hex()}", flush=True)
+    print(f"[ae] completion received ({len(completion)} bytes)", flush=True)
     recv_sequence = 1
     send_sequence = 0
     while True:
@@ -243,20 +292,16 @@ def serve_command(sock, oracle_host, oracle_port):
         if size and not (cmd == 0x92 and size == 4000000):
             body = recv_record(sock, recv_key, recv_nonce, recv_sequence)
             recv_sequence += 1
-            print(f"[cmd] body: {body.hex()}", flush=True)
+            print(f"[cmd] body received ({len(body)} bytes)", flush=True)
         if cmd in (0x91, 0x93):
-            hardware = struct.unpack_from("<I", body, 44)[0]
-            product_code = struct.unpack_from("<I", body, 48)[0]
-            version_a = struct.unpack_from("<I", body, 72)[0]
-            version_b = struct.unpack_from("<I", body, 80)[0]
-            response_body = console_info(hardware, product_code, body[56:73], version_a, version_b)
+            response_body = console_info_for_power_request(body)
             result = 0
             if cmd == 0x91:
                 waiting = struct.pack("<BBHIQ", cmd, sub, version, 33, 0)
                 send_command_record(sock, send_key, send_nonce, send_sequence, waiting)
                 send_sequence += 1
                 POWER_EVENT.clear()
-                print("[power] type 'power' to simulate the source console power button", flush=True)
+                print("[power] type 'power' to simulate the PC source-console power button", flush=True)
                 if not POWER_EVENT.wait(310):
                     raise TimeoutError("power-button simulation timed out")
         elif cmd == 0x92:
@@ -286,6 +331,8 @@ def serve_command(sock, oracle_host, oracle_port):
             send_command_record(sock, send_key, send_nonce, send_sequence, struct.pack("<I", 1000))
             send_sequence += 1
         print(f"[cmd] response complete cmd={cmd:#x}", flush=True)
+        if cmd == 0xB3:
+            print("[final] completion response sent", flush=True)
         if cmd == 0x92:
             break
         if cmd not in (0x91, 0xA1):
@@ -293,9 +340,12 @@ def serve_command(sock, oracle_host, oracle_port):
     COMMAND_STATE["active"] = False
 
 
-def data_server(listener, oracle_host, oracle_port):
+def _serve_data_connections(listener, oracle_host, oracle_port, client_host=None):
     while True:
         client, address = listener.accept()
+        if not selected_client(address, client_host):
+            client.close()
+            continue
         print(f"[data] connection from {address}", flush=True)
         with client:
             client.settimeout(310)
@@ -306,7 +356,7 @@ def data_server(listener, oracle_host, oracle_port):
                 client, oracle_host, oracle_port, client_value, server_value
             )
             completion = recv_record(client, recv_key, recv_nonce, 0)
-            print(f"[data] completion: {completion.hex()}", flush=True)
+            print(f"[data] completion received ({len(completion)} bytes)", flush=True)
             sequence = 1
             send_sequence = 0
             while True:
@@ -329,7 +379,7 @@ def data_server(listener, oracle_host, oracle_port):
                 body = b""
                 if size and cmd != 0x92:
                     body, sequence = recv_body(client, recv_key, recv_nonce, sequence, size)
-                    print(f"[data] body ({len(body)} bytes): {body.hex()}", flush=True)
+                    print(f"[data] body received ({len(body)} bytes)", flush=True)
                 if cmd == 0xA0:
                     for result in (0x23, 0x23, 0x23, 0x23, 0x23, 0x23, 0):
                         response = struct.pack("<BBHIQ", cmd, sub, version, result, 0)
@@ -389,13 +439,24 @@ def data_server(listener, oracle_host, oracle_port):
                     send_record(client, send_key, send_nonce, send_sequence, response)
                     send_sequence += 1
                     if cmd == 0xB3:
+                        print("[final] completion response sent", flush=True)
                         break
                 else:
                     break
 
 
+def data_server(listener, oracle_host, oracle_port, client_host=None):
+    while True:
+        try:
+            _serve_data_connections(listener, oracle_host, oracle_port, client_host)
+        except (EOFError, ConnectionError, TimeoutError, ValueError) as exc:
+            # The PS5 may close a data session after the final save marker and
+            # open another one for completion. Keep accepting on the same port.
+            print(f"[data] connection ended: {exc}; waiting for next connection", flush=True)
+
+
 def main():
-    global DATA_ADDRESS, COMMAND_PORT, DATA_PORT
+    global DATA_ADDRESS, SYSTEM_VERSION, COMMAND_PORT, DATA_PORT
     parser = argparse.ArgumentParser(description="Local PS5 Data Transfer source emulator")
     parser.add_argument("--oracle-host", default="192.168.0.125")
     parser.add_argument("--oracle-port", type=int, default=9022)
@@ -404,34 +465,45 @@ def main():
     parser.add_argument("--data-port", type=int, default=DATA_PORT)
     parser.add_argument("--ipv6", action="store_true", help="use local PSK derivation instead of the oracle")
     parser.add_argument("--advertise-address", help="PC IPv6 address to advertise for data connections")
+    parser.add_argument("--client-host", help="selected PS5 IPv4 address used to select the local route")
+    parser.add_argument("--system-version", default="14200007", help="eight-digit firmware version advertised to the PS5")
     args = parser.parse_args()
     COMMAND_PORT = args.port
     DATA_PORT = args.data_port
+    SYSTEM_VERSION = system_version_bytes(args.system_version)
     if args.ipv6 and not args.advertise_address:
         parser.error("--ipv6 requires --advertise-address")
     if args.advertise_address:
         DATA_ADDRESS = ipaddress.IPv6Address(args.advertise_address).packed
+    elif args.client_host:
+        DATA_ADDRESS = route_address_for_client(args.client_host)
     family = socket.AF_INET6 if args.ipv6 else socket.AF_INET
     bind_address = "::" if args.ipv6 else "0.0.0.0"
     sys.stdout = Tee(os.environ.get("DT_LOG", "dt.txt"))
+    threading.excepthook = log_thread_exception
+    print(f"[source] version={SYSTEM_VERSION.decode()} data-address={ipaddress.IPv6Address(DATA_ADDRESS)}", flush=True)
+    print(f"[source] oracle={args.oracle_host}:{args.oracle_port}", flush=True)
     threading.Thread(target=interactive_console, daemon=True).start()
 
     data_listener = socket.socket(family, socket.SOCK_STREAM)
     data_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     data_listener.bind((bind_address, DATA_PORT))
     data_listener.listen(1)
-    threading.Thread(target=data_server, args=(data_listener, args.oracle_host, args.oracle_port), daemon=True).start()
+    threading.Thread(target=data_server, args=(data_listener, args.oracle_host, args.oracle_port, args.client_host), daemon=True).start()
     listener = socket.socket(family, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((bind_address, args.port))
     listener.listen(1)
-    threading.Thread(target=discovery_server, args=(args.discovery_port, args.ipv6), daemon=True).start()
+    threading.Thread(target=discovery_server, args=(args.discovery_port, args.ipv6, args.client_host), daemon=True).start()
     print(f"[tcp] source listening on {args.port}; select {HOST_NAME.decode()} on the PS5", flush=True)
     while True:
         client, address = listener.accept()
+        if not selected_client(address, args.client_host):
+            client.close()
+            continue
         print(f"[tcp] connection from {address}", flush=True)
         with client:
-            client.settimeout(310)
+            client.settimeout(60)
             try:
                 serve_command(client, args.oracle_host, args.oracle_port)
             except (EOFError, OSError, ValueError) as exc:
