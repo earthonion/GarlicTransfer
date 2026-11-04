@@ -126,7 +126,8 @@ class DiscoveryReplyTests(unittest.TestCase):
         client.settimeout(1.0)
         try:
             client.sendto(b"WAKEUP * HTTP/1.1\n", ("127.0.0.1", self.port))
-            with self.assertRaises((TimeoutError, socket.timeout)):
+            # Windows can report an ignored UDP datagram as WSAECONNRESET.
+            with self.assertRaises((TimeoutError, socket.timeout, ConnectionResetError)):
                 client.recvfrom(4096)
         finally:
             client.close()
