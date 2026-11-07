@@ -112,6 +112,16 @@ Downloaded entry folders contain the save containers and a manifest with paths, 
 
 The source power signal is sent automatically after one second. Upload generates a filtered metadata database containing one user and only the selected save entries.
 
+### Compare a PS5 save before and after transfer (experimental)
+
+Download the same save entry before and after a test, keeping both download folders. This offline command reads the two entry folders and prints a JSON comparison; it does not upload or modify a save:
+
+```bash
+python3 poc/dt_roundtrip_diff.py /path/to/before/77 /path/to/after/77 > roundtrip-diff.json
+```
+
+If you have separately decrypted ZIP exports for both images, add `--before-plaintext /path/to/before.zip --after-plaintext /path/to/after.zip`. The report checks manifest hashes, counts every changed image byte and range, compares the embedded sealed-key record, and shows changed GFP5 header fields. It does not compare the parent `metadata.db` files. PFS v2 region labels are based partly on [published PS4 structures](https://github.com/flatz/pkg_pfs_tool/blob/4e74afa98b0f57b2b50a2182c1ef89905dc040a7/src/pfs.h) and are diagnostic leads, not proof that the PS5 accepted the transferred save. A matching plaintext ZIP establishes matching mounted files; it does not validate the image wrapper or the console's final transfer step. Do not include downloaded saves or account metadata in a public issue.
+
 ## Firmware mapping
 
 The DDP `system-version` determines both the command protocol and power-body firmware value:
