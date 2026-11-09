@@ -171,9 +171,10 @@ function startPairing(options) {
     if (process.platform === 'linux' && process.getuid() !== 0) {
       command = 'pkexec';
       args = [
-        '/usr/bin/env', `PYTHONPATH=${resourceRoot}`,
+        '/usr/bin/env',
         `DT_PAIRING_UID=${process.getuid()}`, `DT_PAIRING_GID=${process.getgid()}`,
-        python, '-u', '-m', 'poc.dt_pair', '-',
+        python, '-u', '-c',
+        `import sys, runpy; sys.path.insert(0, ${JSON.stringify(resourceRoot)}); sys.argv = ['poc.dt_pair', '-']; runpy.run_module('poc.dt_pair', run_name='__main__')`,
       ];
       environment = process.env;
     }
