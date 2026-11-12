@@ -65,6 +65,20 @@ class MetadataSafetyTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertTrue((root / "generated-manifest.json").is_file())
 
+    def test_same_size_edit_regenerates_manifest_hash(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as folder:
+            root, assets, source = self.make_case(folder)
+            payload = b"abcdefgh"
+            (assets / str(ENTRY_ID) / "save.bin").write_bytes(payload)
+            self.generate(root, assets, source)
+
+            generated = json.loads((root / "generated-manifest.json").read_text())
+            item = generated[str(ENTRY_ID)]["files"][0]
+            self.assertEqual(item["size"], len(payload))
+            self.assertEqual(item["sha256"], hashlib.sha256(payload).hexdigest())
+
     def test_cross_user_upload_is_allowed(self):
         import sqlite3
         from contextlib import closing
