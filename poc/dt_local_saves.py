@@ -101,7 +101,7 @@ def import_save(assets, entry_id, filename, source):
     temporary = target.with_name(target.name + ".import.tmp")
     shutil.copyfile(source, temporary)
     try:
-        with temporary.open("rb") as stream:
+        with temporary.open("r+b") as stream:
             os.fsync(stream.fileno())
         os.replace(temporary, target)
         actual_id, entry = load_manifest(assets, entry_id)

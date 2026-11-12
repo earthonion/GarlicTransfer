@@ -1,9 +1,11 @@
 import hashlib
 import json
+import os
 import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from poc.dt_local_saves import export_save, import_save, local_inventory
 
@@ -68,7 +70,8 @@ class LocalSaveTests(unittest.TestCase):
             source = root / "replacement"
             payload = b"new-save"
             source.write_bytes(payload)
-            import_save(assets, entry_id, "sdimg_DATA", source)
+            with patch("poc.dt_local_saves.os.fsync", side_effect=lambda descriptor: os.write(descriptor, b"")):
+                import_save(assets, entry_id, "sdimg_DATA", source)
 
             target = assets / str(entry_id) / "sdimg_DATA"
             self.assertEqual(target.read_bytes(), payload)

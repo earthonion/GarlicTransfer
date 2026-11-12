@@ -438,9 +438,23 @@ function startUpload(options) {
           active.transferFinished = true;
           send('status', { step: 3, message: 'Save data sent. Waiting for the console to disconnect.' });
         }
-        if (active.transferFinished && line.toLowerCase().includes('cmd=0x94')) {
+        if (line.toLowerCase().includes('response complete cmd=0xb0')) {
+          active.rebootRequested = true;
+          send('status', { step: 3, message: 'Reboot requested. Waiting for the console to reconnect for reboot authentication.' });
+        }
+        if (active.rebootRequested && line.toLowerCase().includes('response complete cmd=0x93')) {
+          active.rebootAuthenticated = true;
+          send('status', { step: 3, message: 'Reboot authentication acknowledged. Finishing the transfer.' });
+        }
+        if (active.transferFinished && !active.rebootRequested && line.toLowerCase().includes('response complete cmd=0x94')) {
           active.completed = true;
           send('done', { message: 'Save upload completed. The client may reboot to finish.' });
+          stopActive();
+          return;
+        }
+        if (active.rebootAuthenticated && line.includes('[cmd] session ended:')) {
+          active.completed = true;
+          send('done', { message: 'Save upload and reboot authentication completed.' });
           stopActive();
           return;
         }
@@ -512,7 +526,7 @@ ipcMain.handle('dialog:assets', async () => {
 ipcMain.handle('dialog:external-save', async () => {
   const result = await dialog.showOpenDialog(window, {
     properties: ['openFile'],
-    filters: [{ name: 'PS5 save containers', extensions: ['bin', 'img', 'save'] }, { name: 'All files', extensions: ['*'] }],
+    filters: [{ name: 'All files', extensions: ['*'] }, { name: 'PS5 save containers', extensions: ['bin', 'img', 'save'] }],
   });
   return result.canceled ? null : result.filePaths[0];
 });

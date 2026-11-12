@@ -395,7 +395,11 @@ def data_server(listener, oracle_host, oracle_port):
             sequence = 1
             send_sequence = 0
             while True:
-                header = recv_record(client, recv_key, recv_nonce, sequence)
+                try:
+                    header = recv_record(client, recv_key, recv_nonce, sequence)
+                except EOFError as exc:
+                    print(f"[data] session ended: {exc}", flush=True)
+                    break
                 sequence += 1
                 cmd, sub, version, flags, size = struct.unpack("<BBHIQ", header)
                 print(f"[data] cmd={cmd:#x} sub={sub} version={version:#x} body={size}", flush=True)
