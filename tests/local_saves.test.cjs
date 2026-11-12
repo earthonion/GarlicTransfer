@@ -31,3 +31,9 @@ test('local save IPC uses the backend inventory, export, and import operations',
   assert.match(preload, /exportLocalSave:/);
   assert.match(preload, /importLocalSave:/);
 });
+
+test('external save upload is not exposed', () => {
+  assert.doesNotMatch(html, /id="uploadExternalBtn"/);
+  assert.doesNotMatch(html, /External save \(not in the console library\)/);
+  assert.doesNotMatch(renderer, /controls\.uploadExternalBtn/);
+});
