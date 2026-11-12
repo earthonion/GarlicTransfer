@@ -119,11 +119,15 @@ The source power signal is sent automatically after one second. Upload generates
 
 Click **Browse local saves** to list files downloaded from the selected console profile. **Export** copies a file to a directory of your choice. **Import** replaces the selected local file after a backup confirmation and regenerates its size, SHA-256, GFP5 header, and local manifests for the next upload.
 
+## Save editor
+
+The **Save editor** tab decrypts console save containers through the configured GarlicSaves server, opens a local workspace, and repacks the workspace for encryption. Choose files from any folder or select an existing download. Decrypted files can be edited as UTF-8 text or hexadecimal bytes, replaced, added, deleted, or downloaded individually. Required metadata is protected from deletion. **Open a decrypted folder** reopens an existing workspace, and **Resign without editing** changes the account without opening the editor. The account ID from `param.sfo` is reused by default when available.
+
 ## Development checks
 
 ```bash
 npm run check
-python3 -m py_compile poc/dt_backend.py poc/dt_download.py poc/dt_metadata.py poc/dt_source.py poc/dt_discovery.py poc/dt_local_saves.py
+python3 -m py_compile poc/dt_backend.py poc/dt_download.py poc/dt_metadata.py poc/dt_source.py poc/dt_discovery.py poc/dt_local_saves.py poc/dt_save_editor.py
 node --test tests/*.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```

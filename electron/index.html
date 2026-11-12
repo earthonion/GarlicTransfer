@@ -16,6 +16,7 @@
   </header>
   <nav class="tabs" aria-label="Application sections">
     <button class="tab active" data-tab="transfer" type="button">Transfer</button>
+    <button class="tab" data-tab="saveEditor" type="button">Save editor</button>
     <button class="tab" data-tab="settings" type="button">Settings</button>
   </nav>
   <main>
@@ -112,6 +113,88 @@
       </section>
     </section>
 
+    <section id="saveEditorTab" class="tab-content" hidden>
+      <section class="panel">
+        <h2>1. Choose an encrypted save</h2>
+        <p class="hint">Use files downloaded from your console, or choose encrypted save containers and key files from any folder.</p>
+        <div class="editor-actions">
+          <button id="editorChooseFiles" type="button">Choose save files</button>
+          <button id="editorUseDownloaded" type="button">Use a downloaded save</button>
+          <button id="editorOpenWorkspace" type="button">Open a decrypted folder</button>
+        </div>
+        <div id="editorLocalPicker" class="editor-local-picker" hidden>
+          <label>Downloaded save<select id="editorLocalSave"></select></label>
+          <button id="editorLocalSelect" type="button">Use this save</button>
+        </div>
+        <p id="editorInputSummary" class="editor-selection">No encrypted files selected.</p>
+        <div class="editor-operation-grid">
+          <div class="editor-operation">
+            <h3>Decrypt and edit</h3>
+            <p class="hint">Download the decrypted contents, then edit, add, remove, or export files before rebuilding the save.</p>
+            <button id="editorDecrypt" class="primary-action" type="button">Decrypt and open editor</button>
+          </div>
+          <div class="editor-operation">
+            <h3>Resign without editing</h3>
+            <label>Target account ID<input id="editorResignAccount" maxlength="16" spellcheck="false" placeholder="16 hexadecimal digits"></label>
+            <button id="editorResign" type="button">Resign and download</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="editorWorkspacePanel" class="panel" hidden>
+        <div class="editor-section-heading">
+          <div>
+            <h2>2. Edit decrypted contents</h2>
+            <p id="editorWorkspacePath" class="hint editor-path"></p>
+          </div>
+          <button id="editorDownloadArchive" type="button">Download decrypted ZIP</button>
+        </div>
+        <div class="editor-actions">
+          <button id="editorAddFiles" type="button">Add files</button>
+          <button id="editorRefresh" type="button">Refresh file list</button>
+        </div>
+        <div class="table-wrap editor-files">
+          <table>
+            <thead><tr><th>File</th><th>Size</th><th>Actions</th></tr></thead>
+            <tbody id="editorFiles"><tr><td colspan="3" class="empty">Decrypt a save or open a decrypted folder.</td></tr></tbody>
+          </table>
+        </div>
+        <div class="editor-encrypt">
+          <label>Account ID for encryption<input id="editorEncryptAccount" maxlength="16" spellcheck="false" placeholder="16 hexadecimal digits"></label>
+          <button id="editorEncrypt" class="primary-action" type="button">Encrypt and download</button>
+        </div>
+        <p class="hint">Required metadata is protected from deletion. The account ID from param.sfo is filled in automatically when available.</p>
+      </section>
+
+      <section id="editorFilePanel" class="panel" hidden>
+        <div class="editor-section-heading">
+          <div>
+            <h2 id="editorFileName">Edit file</h2>
+            <p id="editorFileInfo" class="hint"></p>
+          </div>
+          <div class="editor-actions">
+            <button id="editorTextMode" type="button">Text</button>
+            <button id="editorHexMode" type="button">Hex</button>
+            <button id="editorDownloadFile" type="button">Download</button>
+            <button id="editorCloseFile" type="button">Close</button>
+          </div>
+        </div>
+        <textarea id="editorFileContent" class="editor-file-content" spellcheck="false"></textarea>
+        <div class="editor-save-row">
+          <button id="editorSaveFile" class="primary-action" type="button">Save changes</button>
+          <span id="editorFileDirty" class="hint"></span>
+        </div>
+      </section>
+
+      <section class="status-panel">
+        <p id="editorStatus">Choose encrypted files to decrypt or resign, or open an existing decrypted folder.</p>
+      </section>
+      <details class="panel editor-log-panel">
+        <summary>Operation log</summary>
+        <pre id="editorLog" aria-live="polite"></pre>
+      </details>
+    </section>
+
     <section id="settingsTab" class="tab-content" hidden>
       <section class="panel upload-inputs">
         <h2>Transfer paths</h2>
@@ -186,5 +269,6 @@
     <button id="cancelImportBtn" class="secondary" type="button">Cancel</button>
   </dialog>
   <script src="renderer.js"></script>
+  <script src="save_editor.js"></script>
 </body>
 </html>

@@ -90,3 +90,32 @@ th { position: sticky; top: 0; background: #1c2633; color: #9eb1c6; }
   .connections, .upload-inputs, .actions { grid-template-columns: 1fr; }
   .actions { flex-direction: column; }
 }
+
+.hint { color: #93a4b9; font-size: 12px; line-height: 1.5; }
+.editor-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0; }
+.editor-operation-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 16px; }
+.editor-operation { border: 1px solid #304056; border-radius: 10px; padding: 14px; background: #141d28; }
+.editor-operation h3 { margin: 0 0 8px; font-size: 13px; }
+.editor-operation .primary-action, .editor-operation button { margin-top: 12px; }
+.editor-selection { padding: 10px 12px; border-radius: 8px; background: #121b26; color: #c4d3e5; font-size: 12px; word-break: break-word; }
+.editor-local-picker { display: flex; align-items: flex-end; gap: 10px; margin-top: 12px; }
+.editor-local-picker label { flex: 1; }
+.editor-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.editor-section-heading .editor-actions { justify-content: flex-end; margin: 0; }
+.editor-path { margin: -6px 0 10px; word-break: break-all; }
+.editor-files { max-height: 420px; }
+.editor-files td:last-child { white-space: nowrap; }
+.editor-files td button { margin: 2px 5px 2px 0; padding: 5px 8px; }
+.editor-encrypt { display: flex; align-items: flex-end; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #2b3747; }
+.editor-encrypt label { flex: 1; }
+.primary-action { background: #246ca8; border-color: #3b8aca; font-weight: 650; }
+.editor-file-content { width: 100%; min-height: 420px; margin-top: 14px; padding: 14px; resize: vertical; border: 1px solid #35455a; border-radius: 8px; background: #0d141d; color: #e6edf5; outline: none; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; white-space: pre; }
+.editor-save-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.editor-log-panel summary { cursor: pointer; color: #b8c7d9; font-size: 13px; font-weight: 600; }
+#editorLog { height: 150px; overflow: auto; margin: 12px 0 0; white-space: pre-wrap; word-break: break-word; color: #b9c9da; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
+@media (max-width: 700px) {
+  .editor-operation-grid { grid-template-columns: 1fr; }
+  .editor-section-heading, .editor-encrypt { flex-direction: column; }
+  .editor-section-heading .editor-actions { justify-content: flex-start; }
+  .editor-encrypt label { width: 100%; }
+}

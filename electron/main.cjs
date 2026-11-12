@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
@@ -7,6 +7,7 @@ const { startRemoteOracle, stopRemoteOracle } = require('./remote_oracle.cjs');
 const { loadSettings, saveSettings } = require('./config.cjs');
 const { titleName } = require('./titles.cjs');
 const { pairingPrefixPath, existingPairingPrefix } = require('./pairing_store.cjs');
+const { registerSaveEditor } = require('./save_editor.cjs');
 const { resourceRoot, oracleElf, workDir, pythonBin } = require('./paths.cjs');
 let window;
 let active = null;
@@ -593,3 +594,13 @@ ipcMain.handle('transfer:power', () => {
 ipcMain.handle('transfer:cancel', stopActive);
 ipcMain.handle('settings:get', () => loadSettings());
 ipcMain.handle('settings:set', (_event, settings) => saveSettings(settings));
+
+registerSaveEditor({
+  ipcMain,
+  app,
+  dialog,
+  shell,
+  python: pythonBin(),
+  resourceRoot,
+  workDir,
+});

@@ -538,6 +538,7 @@ for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     for (const other of document.querySelectorAll('.tab')) other.classList.toggle('active', other === tab);
     byId('transferTab').hidden = tab.dataset.tab !== 'transfer';
+    byId('saveEditorTab').hidden = tab.dataset.tab !== 'saveEditor';
     byId('settingsTab').hidden = tab.dataset.tab !== 'settings';
   });
 }
