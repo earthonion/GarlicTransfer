@@ -2,7 +2,7 @@
 
 Upload and Download PS5 saves to a latest firmware console. Without a jailbreak.
 
-**Alpha release — 0.2.19**
+**Alpha release — 0.2.20**
 
 GarlicTransfer is an Electron application for downloading PS5 save containers to a PC and uploading selected saves back to a console through Sony's Data Transfer protocol. It supports local PPR oracles on a jailbroken PS5 and volunteer workers through HTOS.
 
@@ -15,6 +15,7 @@ This is research software. Back up your saves before using Upload. Upload can ov
 - Offline PS4/PS5 title names from [PlayStation-Titles](https://github.com/andshrew/PlayStation-Titles).
 - A persistent console-to-PC session: browse once, then download one or more saves without re-entering Data Transfer mode.
 - Multi-save upload selection with filtered metadata and selectable destination users.
+- A local-save library with per-file export and confirmed import replacement.
 - Filtered upload metadata and save-only transfer behavior based on a captured working transfer.
 - Automatic source power signal and optional clean `DisconnectPS5` reboot after downloading.
 - Local or volunteer PPR oracle support.
@@ -114,13 +115,16 @@ Downloaded entry folders contain the save containers and a manifest with paths, 
 
 The source power signal is sent automatically after one second. Upload generates a filtered metadata database containing one user and only the selected save entries.
 
+## Local saves
+
+Click **Browse local saves** to list files downloaded from the selected console profile. **Export** copies a file to a directory of your choice. **Import** replaces the selected local file after a backup confirmation and regenerates its size, SHA-256, GFP5 header, and local manifests for the next upload.
 
 ## Development checks
 
 ```bash
 npm run check
-python3 -m py_compile poc/dt_backend.py poc/dt_download.py poc/dt_metadata.py poc/dt_source.py poc/dt_discovery.py
-node --test tests/account_id.test.cjs tests/pairing_store.test.cjs
+python3 -m py_compile poc/dt_backend.py poc/dt_download.py poc/dt_metadata.py poc/dt_source.py poc/dt_discovery.py poc/dt_local_saves.py
+node --test tests/*.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 

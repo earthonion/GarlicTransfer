@@ -40,6 +40,7 @@
       <section class="actions">
         <button id="downloadBtn" class="primary">Browse console saves <small>console → PC</small></button>
         <button id="uploadBtn" class="primary">Upload selected saves <small>PC → console</small></button>
+        <button id="browseLocalBtn" class="primary">Browse local saves <small>downloaded files</small></button>
         <button id="finishBtn" class="secondary danger" hidden>Finish and reboot console</button>
         <button id="cancelBtn" class="secondary" disabled>Cancel</button>
       </section>
@@ -66,6 +67,16 @@
       <section class="status-panel">
         <p id="status">Ready. Browse the console, then choose which saves to download or upload.</p>
         <button id="powerBtn" class="power" hidden>Simulate source power button</button>
+      </section>
+
+      <section id="localBrowser" class="panel" hidden>
+        <h2>Local saves</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Title</th><th>User</th><th>File</th><th>Size (MiB)</th><th>Actions</th></tr></thead>
+            <tbody id="localEntries"><tr><td colspan="5" class="empty">Download a save to see it here.</td></tr></tbody>
+          </table>
+        </div>
       </section>
 
       <section id="saveBrowser" class="panel" hidden>
@@ -175,6 +186,12 @@
       <li>Follow the on-screen prompts to import the data.</li>
     </ol>
     <button id="uploadModalCloseBtn" class="secondary" type="button">Close instructions</button>
+  </dialog>
+  <dialog id="importModal" class="power-modal pairing-modal">
+    <h2>Replace local save</h2>
+    <p id="importWarning">This will replace an existing save. Make sure you have backed it up. Are you sure you want to do this?</p>
+    <button id="confirmImportBtn" class="danger" type="button">Replace save</button>
+    <button id="cancelImportBtn" class="secondary" type="button">Cancel</button>
   </dialog>
   <script src="renderer.js"></script>
 </body>

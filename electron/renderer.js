@@ -8,8 +8,10 @@ for (const id of [
   'downloadBtn', 'downloadSelectedBtn', 'uploadBtn', 'finishBtn', 'cancelBtn', 'powerBtn', 'status', 'entries', 'appEntries', 'profileEntries', 'mediaEntries', 'otherEntries', 'log',
   'consoleSelect', 'discoverBtn', 'manualHost', 'manualConnectBtn', 'pairBtn', 'pairingState', 'preferIpv6', 'selectAllEntries', 'entryCount', 'powerModal',
   'pairingModal', 'pairingCancelBtn', 'uploadModal', 'uploadModalCloseBtn', 'externalSavePath', 'externalTitleId', 'uploadExternalBtn', 'chooseExternalSaveBtn',
+  'browseLocalBtn', 'localBrowser', 'localEntries', 'importModal', 'importWarning', 'confirmImportBtn', 'cancelImportBtn',
 ]) controls[id] = byId(id);
 let activeTransfer = null;
+let pendingImport = null;
 let availableUsers = [];
 let availableEntries = [];
 let requestedDownloadIds = [];
@@ -110,6 +112,8 @@ function updateSelection() {
 function busy(value) {
   controls.downloadBtn.disabled = value;
   controls.uploadBtn.disabled = value;
+  controls.browseLocalBtn.disabled = value;
+  for (const button of document.querySelectorAll('.local-action')) button.disabled = value;
   controls.pairBtn.disabled = !window.saveTransfer.pairingAvailable || value || browseSessionActive;
   controls.cancelBtn.disabled = !value;
   controls.consoleSelect.disabled = value || browseSessionActive;
@@ -153,6 +157,127 @@ function showUploadModal() {
 function hideUploadModal() {
   if (controls.uploadModal.open) controls.uploadModal.close();
 }
+
+function hideImportModal() {
+  if (controls.importModal.open) controls.importModal.close();
+  pendingImport = null;
+}
+
+function localEntryTitle(entry) {
+  return entry.name || availableEntries.find((candidate) => candidate.id === entry.id)?.name || entry.title;
+}
+
+function renderLocalEntries(entries) {
+  controls.localEntries.replaceChildren();
+  if (!entries.length) {
+    controls.localEntries.innerHTML = '<tr><td colspan="5" class="empty">No downloaded saves were found.</td></tr>';
+    return;
+  }
+  for (const entry of entries) {
+    for (const file of entry.files) {
+      const row = document.createElement('tr');
+      const title = document.createElement('td');
+      title.textContent = `${localEntryTitle(entry)} · entry ${entry.id}`;
+      const owner = document.createElement('td');
+      owner.textContent = entry.owner;
+      const name = document.createElement('td');
+      name.textContent = file.file;
+      const size = document.createElement('td');
+      size.textContent = (file.size / 0x100000).toFixed(1);
+      const actions = document.createElement('td');
+      const exportButton = document.createElement('button');
+      exportButton.type = 'button';
+      exportButton.className = 'local-action';
+      exportButton.textContent = 'Export';
+      exportButton.addEventListener('click', () => exportLocalSave(entry, file));
+      const importButton = document.createElement('button');
+      importButton.type = 'button';
+      importButton.className = 'local-action';
+      importButton.textContent = 'Import';
+      importButton.addEventListener('click', () => chooseImportReplacement(entry, file));
+      actions.append(exportButton, importButton);
+      row.append(title, owner, name, size, actions);
+      controls.localEntries.appendChild(row);
+    }
+  }
+}
+
+async function refreshLocalSaves() {
+  const result = await window.saveTransfer.localSaves(options().assets);
+  controls.localBrowser.hidden = false;
+  renderLocalEntries(result.entries || []);
+  return (result.entries || []).reduce((count, entry) => count + entry.files.length, 0);
+}
+
+async function browseLocalSaves() {
+  if (!options().clientHost) {
+    status('Discover your console first.');
+    return;
+  }
+  if (activeTransfer || browseSessionActive) {
+    status('Stop the active transfer before changing local saves.');
+    return;
+  }
+  activeTransfer = 'local';
+  busy(true);
+  try {
+    const count = await refreshLocalSaves();
+    status(`Found ${count} downloaded file(s). Export a copy or import a replacement.`);
+  } catch (error) {
+    status(`Could not browse local saves: ${error.message}`);
+  } finally {
+    activeTransfer = null;
+    busy(false);
+  }
+}
+
+async function exportLocalSave(entry, file) {
+  if (activeTransfer || browseSessionActive) return;
+  activeTransfer = 'local';
+  busy(true);
+  try {
+    const result = await window.saveTransfer.exportLocalSave({
+      assets: options().assets,
+      entryId: entry.id,
+      filename: file.file,
+    });
+    if (result) status(`Exported ${file.file} to ${result.destination}`);
+  } catch (error) {
+    status(`Could not export ${file.file}: ${error.message}`);
+  } finally {
+    activeTransfer = null;
+    busy(false);
+  }
+}
+
+async function chooseImportReplacement(entry, file) {
+  if (activeTransfer || browseSessionActive) return;
+  const source = await window.saveTransfer.chooseExternalSave();
+  if (!source) return;
+  pendingImport = { assets: options().assets, entryId: entry.id, filename: file.file, source };
+  controls.importWarning.textContent = `This will replace ${file.file}. Make sure you have backed it up. Are you sure you want to do this?`;
+  if (!controls.importModal.open) controls.importModal.showModal();
+}
+
+controls.confirmImportBtn.addEventListener('click', async () => {
+  if (!pendingImport) return;
+  const replacement = pendingImport;
+  pendingImport = null;
+  if (controls.importModal.open) controls.importModal.close();
+  activeTransfer = 'local';
+  busy(true);
+  try {
+    await window.saveTransfer.importLocalSave(replacement);
+    await refreshLocalSaves();
+    status(`Replaced ${replacement.filename} and refreshed its upload metadata.`);
+  } catch (error) {
+    status(`Could not replace ${replacement.filename}: ${error.message}`);
+  } finally {
+    activeTransfer = null;
+    busy(false);
+  }
+});
+controls.cancelImportBtn.addEventListener('click', hideImportModal);
 
 function renderEntryTable(container, entries, emptyText) {
   container.replaceChildren();
@@ -559,6 +684,7 @@ controls.selectAllEntries.addEventListener('change', () => {
   renderEntries();
 });
 controls.uploadBtn.addEventListener('click', startUpload);
+controls.browseLocalBtn.addEventListener('click', browseLocalSaves);
 controls.confirmUploadBtn.addEventListener('click', startUploadSource);
 controls.chooseExternalSaveBtn.addEventListener('click', async () => {
   const selected = await window.saveTransfer.chooseExternalSave();

@@ -75,6 +75,7 @@ th { position: sticky; top: 0; background: #1c2633; color: #9eb1c6; }
 .title-id { display: block; color: #8296ac; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .downloaded { display: block; color: #72c995; font-size: 10px; margin-top: 4px; }
 .row-download { white-space: nowrap; }
+.local-action { margin-right: 6px; white-space: nowrap; }
 .empty { color: #73869b; text-align: center; padding: 20px; }
 .log-panel { margin-bottom: 0; }
 #log { height: 190px; overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-word; color: #b9c9da; font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; }
