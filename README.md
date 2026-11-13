@@ -119,6 +119,9 @@ The source power signal is sent automatically after one second. Upload generates
 
 Click **Browse local saves** to list files downloaded from the selected console profile. **Export** copies a file to a directory of your choice. **Import** replaces the selected local file after a backup confirmation and regenerates its size, SHA-256, GFP5 header, and local manifests for the next upload.
 
+A [macOS / PS5 14.22 field report](docs/macos-ps5-14.22-report.md) records a tested
+backend workflow and its validation limits.
+
 ## Development checks
 
 ```bash
