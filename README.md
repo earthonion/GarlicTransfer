@@ -128,6 +128,14 @@ node --test tests/*.test.cjs
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
+## Android port
+
+A native Kotlin/Android port lives in [`android/`](android/README.md): a pure-Kotlin
+protocol library (`:core`, JVM-tested against an emulated console on loopback) plus a
+Jetpack Compose app (`:app`). Upload on Android needs root for the low port bindings
+(TCP 1004/1005, UDP 1006) — the app says so and can lower the port floor via `sysctl`
+through libsu. Build with `cd android && ./gradlew :app:assembleDebug`.
+
 ## Title data
 
 PS4 and PS5 title data is bundled from [andshrew/PlayStation-Titles](https://github.com/andshrew/PlayStation-Titles) under the MIT license. Its license and source notice are in `data/PlayStation-Titles-LICENSE.txt`.
