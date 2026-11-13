@@ -3,10 +3,6 @@ set -euo pipefail
 
 TAG="${GITHUB_REF#refs/tags/}"
 API="${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}"
-PRERELEASE=false
-case "$TAG" in
-    *-*) PRERELEASE=true ;;
-esac
 
 release_id=$(curl -fsS -H "Authorization: token $TOKEN" \
     "$API/releases/tags/$TAG" 2>/dev/null \
@@ -15,7 +11,7 @@ release_id=$(curl -fsS -H "Authorization: token $TOKEN" \
 if [ -z "${release_id:-}" ]; then
     release_id=$(curl -fsS -X POST -H "Authorization: token $TOKEN" \
         -H "Content-Type: application/json" \
-        -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\",\"prerelease\":$PRERELEASE}" \
+        -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"target_commitish\":\"$GITHUB_SHA\"}" \
         "$API/releases" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
 fi
 

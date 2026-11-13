@@ -184,6 +184,35 @@ def infer_title_id(title_id, files):
     raise ValueError("title ID must be exactly 9 letters or digits")
 
 
+def save_identity(path, is_directory=False):
+    path = str(path)
+    parts = path.strip("/").split("/")
+    for marker in ("savedata_prospero", "savedata"):
+        if marker not in parts:
+            continue
+        index = parts.index(marker)
+        if index + 1 >= len(parts) or len(parts) < 3:
+            break
+        title_id = parts[index + 1].upper()
+        if not re.fullmatch(r"[A-Z0-9]{9}", title_id):
+            break
+        remainder = parts[index + 2:] if is_directory or path.endswith("/") else parts[index + 2:-1]
+        return title_id, parts[2].lower(), "/".join(remainder)
+    raise ValueError(f"cannot determine a stable save identity from {path}")
+
+
+def remap_upload_entry(entry, entry_id):
+    remapped = json.loads(json.dumps(entry))
+    for item in remapped["files"]:
+        header = bytearray.fromhex(item["header"])
+        struct.pack_into("<I", header, 4, entry_id)
+        item["header"] = header.hex()
+    final_header = bytearray.fromhex(remapped["final_header"])
+    struct.pack_into("<I", final_header, 4, entry_id)
+    remapped["final_header"] = final_header.hex()
+    return remapped
+
+
 def find_downloaded_user(source_metadata, user_id):
     if not source_metadata:
         return None
@@ -347,28 +376,39 @@ def create_filtered_metadata(
     for entry_id in entry_ids:
         actual_id, entry = load_manifest(assets, entry_id, expected_user_id=user_id)
         upload_entries[actual_id] = entry
-    entry_ids = sorted(upload_entries)
-
     output = Path(output).expanduser()
     source_metadata = Path(source_metadata).expanduser()
     if output.resolve() == source_metadata.resolve():
         raise ValueError("filtered metadata output must differ from the source database")
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source_metadata, output)
-    placeholders = ",".join("?" for _ in entry_ids)
     db = sqlite3.connect(output)
     try:
-        rows = db.execute(
-            f"SELECT * FROM dir_entry_info_tbl WHERE target_type = 3 AND id IN ({placeholders}) ORDER BY id",
-            entry_ids,
-        ).fetchall()
-        if {row[0] for row in rows} != set(entry_ids):
-            raise ValueError("one or more selected save entries are absent from the source metadata")
         target_user = db.execute(
             "SELECT * FROM user_info_tbl WHERE user_id = ?", (int(user_id, 16),)
         ).fetchone()
         savedata_rows = db.execute("SELECT * FROM users_savedata_tbl").fetchall()
         candidate_rows = db.execute("SELECT * FROM dir_entry_info_tbl WHERE target_type = 3").fetchall()
+        matched_rows = {}
+        for actual_id, entry in upload_entries.items():
+            identities = {save_identity(item["path"]) for item in entry["files"]}
+            if len(identities) != 1:
+                raise ValueError(f"entry {actual_id} contains files from multiple save identities")
+            identity = identities.pop()
+            matches = [row for row in candidate_rows if save_identity(row[1], is_directory=True) == identity]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"{identity[0]} is absent from the current console metadata or has multiple matching entries; "
+                    "browse the console again without deleting the downloaded files"
+                )
+            if matches[0][0] in matched_rows:
+                raise ValueError(f"multiple selected saves map to metadata entry {matches[0][0]}")
+            matched_rows[matches[0][0]] = (actual_id, matches[0])
+        upload_entries = {
+            current_id: remap_upload_entry(upload_entries[actual_id], current_id)
+            for current_id, (actual_id, _) in matched_rows.items()
+        }
+        rows = sorted((match for _, match in matched_rows.values()), key=lambda row: row[0])
 
         db.execute("DELETE FROM dir_entry_info_tbl")
         db.execute("DELETE FROM app_info_tbl")

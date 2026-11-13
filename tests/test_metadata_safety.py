@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from poc.dt_backend import index_downloaded_manifests
 from poc.dt_metadata import create_metadata, create_filtered_metadata
 
 
@@ -172,7 +173,7 @@ class MetadataSafetyTests(unittest.TestCase):
                     "SELECT id, path, actual_size, transfer_size, required_size FROM dir_entry_info_tbl"
                 ).fetchone()
                 titles = db.execute("SELECT title_id, size FROM users_savedata_tbl").fetchall()
-            self.assertEqual(row, (ENTRY_ID, payload_path, 9, 9, 9))
+            self.assertEqual(row, (122, payload_path, 9, 9, 9))
             self.assertEqual(titles, [(TITLE_ID, 9)])
 
     def test_no_backup_files_have_zero_bu_size(self):
@@ -256,6 +257,28 @@ class MetadataSafetyTests(unittest.TestCase):
                     "SELECT actual_size, transfer_size, required_size FROM dir_entry_info_tbl"
                 ).fetchone()
             self.assertEqual(sizes, (9, 9, 9))
+    def test_changed_entry_id_remaps_metadata_headers_and_download_identity(self):
+        import sqlite3
+        from contextlib import closing
+
+        with tempfile.TemporaryDirectory() as folder:
+            root, assets, source = self.make_case(folder)
+            current_id = 299
+            with closing(sqlite3.connect(source)) as db:
+                db.execute("UPDATE dir_entry_info_tbl SET id = ? WHERE id = ?", (current_id, ENTRY_ID))
+                db.commit()
+
+            output = self.generate(root, assets, source)
+            generated = json.loads((root / "generated-manifest.json").read_text())
+            self.assertEqual(list(generated), [str(current_id)])
+            item = generated[str(current_id)]["files"][0]
+            self.assertEqual(struct.unpack_from("<I", bytes.fromhex(item["header"]), 4)[0], current_id)
+            final_header = bytes.fromhex(generated[str(current_id)]["final_header"])
+            self.assertEqual(struct.unpack_from("<I", final_header, 4)[0], current_id)
+            with closing(sqlite3.connect(output)) as db:
+                row = db.execute("SELECT id, path FROM dir_entry_info_tbl").fetchone()
+            self.assertEqual(row, (current_id, f"/user/home/{USER_ID}/savedata_prospero/{TITLE_ID}/"))
+            self.assertIn((TITLE_ID, USER_ID, ""), index_downloaded_manifests(assets))
 
 
 if __name__ == "__main__":

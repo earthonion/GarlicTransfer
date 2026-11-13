@@ -27,13 +27,17 @@ def public_entry(entry_id, entry):
     }
 
 
-def local_inventory(assets):
+def local_inventory(assets, include_warnings=False):
     assets = Path(assets).expanduser()
+    warnings = []
     root_manifest = assets / "manifest.json"
     entry_ids = set()
     if root_manifest.is_file():
-        document = json.loads(root_manifest.read_text())
-        entry_ids.update(int(key) for key in document if key.isdigit())
+        try:
+            document = json.loads(root_manifest.read_text())
+            entry_ids.update(int(key) for key in document if key.isdigit())
+        except (OSError, ValueError, TypeError) as exc:
+            warnings.append(f"root manifest: {exc}")
     for directory in assets.iterdir() if assets.is_dir() else []:
         if directory.name.isdigit() and (directory / "manifest.json").is_file():
             entry_ids.add(int(directory.name))
@@ -41,8 +45,13 @@ def local_inventory(assets):
         raise ValueError(f"no downloaded saves were found under {assets}")
     entries = []
     for entry_id in sorted(entry_ids):
-        actual_id, entry = load_manifest(assets, entry_id)
-        entries.append(public_entry(actual_id, entry))
+        try:
+            actual_id, entry = load_manifest(assets, entry_id)
+            entries.append(public_entry(actual_id, entry))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            warnings.append(f"entry {entry_id}: {exc}")
+    if include_warnings:
+        return {"entries": entries, "warnings": warnings}
     return entries
 
 
@@ -126,7 +135,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == "list":
-            result = {"entries": local_inventory(args.assets)}
+            result = local_inventory(args.assets, include_warnings=True)
         elif args.command == "export":
             destination = export_save(args.assets, args.entry_id, args.filename, args.destination)
             result = {"destination": str(destination)}

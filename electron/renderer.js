@@ -205,7 +205,10 @@ async function refreshLocalSaves() {
   const result = await window.saveTransfer.localSaves(options().assets);
   controls.localBrowser.hidden = false;
   renderLocalEntries(result.entries || []);
-  return (result.entries || []).reduce((count, entry) => count + entry.files.length, 0);
+  return {
+    count: (result.entries || []).reduce((count, entry) => count + entry.files.length, 0),
+    warnings: result.warnings || [],
+  };
 }
 
 async function browseLocalSaves() {
@@ -220,8 +223,9 @@ async function browseLocalSaves() {
   activeTransfer = 'local';
   busy(true);
   try {
-    const count = await refreshLocalSaves();
-    status(`Found ${count} downloaded file(s). Export a copy or import a replacement.`);
+    const { count, warnings } = await refreshLocalSaves();
+    const warning = warnings.length ? ` Skipped ${warnings.length} invalid manifest(s): ${warnings.join('; ')}` : '';
+    status(`Found ${count} downloaded file(s). Export a copy or import a replacement.${warning}`);
   } catch (error) {
     status(`Could not browse local saves: ${error.message}`);
   } finally {
@@ -538,7 +542,6 @@ for (const tab of document.querySelectorAll('.tab')) {
   tab.addEventListener('click', () => {
     for (const other of document.querySelectorAll('.tab')) other.classList.toggle('active', other === tab);
     byId('transferTab').hidden = tab.dataset.tab !== 'transfer';
-    byId('saveEditorTab').hidden = tab.dataset.tab !== 'saveEditor';
     byId('settingsTab').hidden = tab.dataset.tab !== 'settings';
   });
 }

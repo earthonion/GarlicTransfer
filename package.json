@@ -1,6 +1,6 @@
 {
   "name": "garlic-transfer",
-  "version": "0.3.0-beta.1",
+  "version": "0.2.23",
   "private": true,
   "description": "Guided PS5 save download and upload using local or volunteer PPR oracles",
   "repository": {
@@ -15,7 +15,7 @@
   "main": "electron/main.cjs",
   "scripts": {
     "start": "electron .",
-    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/renderer.js && node --check electron/save_editor.cjs && node --check electron/save_editor.js && node --check electron/remote_oracle.cjs && node --check electron/config.cjs && node --check electron/discovery.cjs && node --check electron/titles.cjs && node --check electron/paths.cjs && node --check electron/pairing_store.cjs",
+    "check": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/renderer.js && node --check electron/remote_oracle.cjs && node --check electron/config.cjs && node --check electron/discovery.cjs && node --check electron/titles.cjs && node --check electron/paths.cjs && node --check electron/pairing_store.cjs",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win",
     "dist:mac": "electron-builder --mac",

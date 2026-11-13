@@ -83,6 +83,22 @@ class LocalSaveTests(unittest.TestCase):
                 self.assertEqual(item["size"], len(payload))
                 self.assertEqual(item["sha256"], expected_hash)
                 self.assertEqual(struct.unpack_from("<Q", bytes.fromhex(item["header"]), 240)[0], len(payload))
+    def test_inventory_skips_invalid_manifest_and_reports_warning(self):
+        with tempfile.TemporaryDirectory() as folder:
+            assets, entry_id = self.make_case(Path(folder))
+            invalid = assets / "39"
+            invalid.mkdir()
+            (invalid / "manifest.json").write_text(json.dumps({
+                "entry_id": 39,
+                "files": [],
+                "39": {"files": [], "final_header": ""},
+            }))
+            result = local_inventory(assets, include_warnings=True)
+            self.assertEqual(len(result["entries"]), 1)
+            self.assertEqual(result["entries"][0]["id"], entry_id)
+            self.assertEqual(len(result["warnings"]), 1)
+            self.assertIn("entry 39", result["warnings"][0])
+            self.assertIn("contains no files", result["warnings"][0])
 
 
 if __name__ == "__main__":
