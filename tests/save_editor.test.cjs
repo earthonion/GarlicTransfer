@@ -69,8 +69,10 @@ test('multipart upload streams save fields and file bytes', async () => {
   await fsPromises.writeFile(input, payload);
   let body = Buffer.alloc(0);
   let workerKey = '';
+  let requestHeaders = {};
   const server = http.createServer((request, response) => {
     workerKey = request.headers['x-worker-key'];
+    requestHeaders = request.headers;
     request.on('data', (chunk) => { body = Buffer.concat([body, chunk]); });
     request.on('end', () => {
       response.setHeader('Content-Type', 'application/json');
@@ -93,6 +95,29 @@ test('multipart upload streams save fields and file bytes', async () => {
     assert.match(text, /name="include_sce_sys"\r\n\r\ntrue/);
     assert.match(text, /filename="sdimg_DATA"/);
     assert.ok(body.includes(payload));
+    assert.equal(Number(requestHeaders['content-length']), body.length);
+    assert.equal(requestHeaders['transfer-encoding'], undefined);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('multipart upload reports an early server response', async () => {
+  const parent = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'garlic-editor-early-response-'));
+  const input = path.join(parent, 'large-save');
+  await fsPromises.writeFile(input, Buffer.alloc(1024 * 1024, 0x5a));
+  const server = http.createServer((request, response) => {
+    response.writeHead(413, { 'Content-Type': 'text/plain' });
+    response.end('payload too large');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    await assert.rejects(createRemoteJob({
+      serverUrl: `http://127.0.0.1:${server.address().port}`,
+      workerKey: 'test-key',
+      operation: 'decrypt',
+      inputs: [input],
+    }), /HTTP 413: payload too large/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
