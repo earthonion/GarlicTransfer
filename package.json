@@ -1,6 +1,6 @@
 {
   "name": "garlic-transfer",
-  "version": "0.4.5",
+  "version": "0.4.6-beta.0",
   "private": true,
   "description": "Guided PS5 save download and upload using local or volunteer PPR oracles",
   "repository": {
@@ -133,6 +133,7 @@
       "depends": [
         "python3 (>= 3.10)",
         "python3-cryptography",
+        "python3-psutil",
         "polkitd | policykit-1"
       ],
       "afterInstall": "build/linux/postinst.sh"

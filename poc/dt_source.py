@@ -34,6 +34,7 @@ class Tee:
 
 COMMAND_STATE = {"lock": threading.Lock(), "active": False, "sequence": 0}
 POWER_EVENT = threading.Event()
+LOCAL_PSK = False
 
 
 def submit_packet(plaintext):
@@ -158,7 +159,7 @@ def packed_address(text):
 
 
 def derive_session(sock, oracle_host, oracle_port, client_value, server_value):
-    if sock.family == socket.AF_INET6:
+    if LOCAL_PSK:
         return derive_keys(client_value, server_value)
     return derive_with_oracle(oracle_host, oracle_port, client_value, server_value)
 
@@ -337,7 +338,7 @@ def local_link_local(sock):
         matches = sorted({a for a in ips if a.version == 6 and a.is_link_local}, key=int)
         break
     if not matches:
-        raise ValueError("PS5 Pro mode needs IPv6 on the adapter used by this connection; enable IPv6 and retry")
+        raise ValueError("hardware-3 transfers need IPv6 on the adapter used by this connection; enable IPv6 and retry")
     return matches[0].packed
 
 
@@ -371,18 +372,18 @@ def serve_command(sock, oracle_host, oracle_port, prepare_ipv6=None):
             product_code = struct.unpack_from("<I", body, 48)[0]
             version_a = struct.unpack_from("<I", body, 76)[0]
             version_b = struct.unpack_from("<I", body, 84)[0]
-            pro_mode = os.environ.get("DT_PS5_PRO") == "1" and hardware == 3
-            if pro_mode:
+            hardware3 = hardware == 3
+            if hardware3:
                 address = local_link_local(sock)
                 if prepare_ipv6 is None:
                     raise ValueError("IPv6 data listener was not configured")
                 prepare_ipv6()
-                print("[compat] PS5 Pro: extended console info, IPv6 data, oracle keys", flush=True)
+                print("[compat] hardware 3: extended console info and IPv6 data", flush=True)
             else:
                 address = DATA_ADDRESS
             response_body = console_info(
                 hardware, product_code, body[56:73], version_a, version_b,
-                data_address=address, extended=pro_mode,
+                data_address=address, extended=hardware3,
             )
             result = 0
             if cmd == 0x91:
@@ -560,7 +561,7 @@ def open_data_listener(family, bind_address, args):
 
 
 def main():
-    global DATA_ADDRESS, ADDRESS_PINNED, COMMAND_PORT, DATA_PORT, SYSTEM_VERSION
+    global DATA_ADDRESS, ADDRESS_PINNED, COMMAND_PORT, DATA_PORT, SYSTEM_VERSION, LOCAL_PSK
     parser = argparse.ArgumentParser(description="Local PS5 Data Transfer source emulator")
     # The UI spawns this module with no argv, so every setting also has an
     # environment form; without that the oracle below defaults to the developer's
@@ -578,6 +579,7 @@ def main():
     parser.add_argument("--system-version", default=os.environ.get("DT_SYSTEM_VERSION"),
                         help="system-version to advertise over DDP (default 14200007)")
     args = parser.parse_args()
+    LOCAL_PSK = args.ipv6
     COMMAND_PORT = args.port
     DATA_PORT = args.data_port
     if args.system_version:

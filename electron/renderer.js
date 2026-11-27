@@ -11,7 +11,7 @@ for (const id of [
   'firewallSettings', 'firewallHelperBtn', 'firewallStatus',
   'addExternalFolderBtn', 'externalUploadControls', 'addExternalSaveBtn', 'addExternalZipBtn', 'exportZipBtn', 'externalTitleId', 'userSelect', 'userSelectLabel', 'uploadSaveSelect', 'uploadSaveSelectLabel', 'confirmUploadBtn', 'sourcePort', 'dataPort', 'discoveryPort', 'uploadDisplayName',
   'downloadBtn', 'downloadSelectedBtn', 'uploadBtn', 'finishBtn', 'cancelBtn', 'powerBtn', 'status', 'entries', 'appEntries', 'profileEntries', 'mediaEntries', 'otherEntries', 'log', 'saveSearch',
-  'consoleSelect', 'consoleLocatorRows', 'jbFirmwareLimit', 'transferConsoleHost', 'transferConsoleLabel', 'discoverBtn', 'manualHost', 'manualConnectBtn', 'pairBtn', 'pairingState', 'preferIpv6', 'proMode', 'selectAllEntries', 'entryCount', 'powerModal',
+  'consoleSelect', 'consoleLocatorRows', 'jbFirmwareLimit', 'transferConsoleHost', 'transferConsoleLabel', 'discoverBtn', 'manualHost', 'manualConnectBtn', 'pairBtn', 'pairingState', 'preferIpv6', 'selectAllEntries', 'entryCount', 'powerModal',
   'pairingModal', 'pairingCancelBtn', 'uploadModal', 'uploadModalCloseBtn', 'authorizationModal', 'authorizationNowBtn', 'authorizationCancelBtn', 'authorizationDescription', 'authorizationFallback', 'authorizationUrl', 'authorizationCopyBtn', 'authorizationCode',
   'browseLocalBtn', 'localBrowser', 'localEntries', 'importModal', 'importWarning', 'confirmImportBtn', 'cancelImportBtn',
 ]) controls[id] = byId(id);
@@ -159,7 +159,6 @@ function options() {
     discoveryPort: Number(controls.discoveryPort.value || 1006),
     uploadDisplayName: controls.uploadDisplayName.value.trim() || 'GarlicTransfer',
     preferIpv6: controls.preferIpv6.checked,
-    proMode: controls.proMode.checked,
     jbFirmwareLimit: controls.jbFirmwareLimit ? controls.jbFirmwareLimit.value.trim() : consoleInfo.DEFAULT_JB_FIRMWARE,
     skipLaunch: dataTransferArmedHost === clientHost && !controls.preferIpv6.checked,
     skipPower: dataTransferArmedHost === clientHost && !controls.preferIpv6.checked,

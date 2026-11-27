@@ -438,9 +438,6 @@ function startUpload(options) {
     if (options.advertiseAddress) {
       sourceEnvironment.DT_ADVERTISE = String(options.advertiseAddress);
     }
-    if (options.proMode) {
-      sourceEnvironment.DT_PS5_PRO = '1';
-    }
     if (options.systemVersion) {
       sourceEnvironment.DT_SYSTEM_VERSION = String(options.systemVersion);
     }

@@ -13,7 +13,7 @@ const fields = [
   'useRemoteOracle', 'serverUrl', 'workerKey', 'workerKeyRevision', 'oracleHost', 'oraclePort',
   'interface', 'hardware', 'output', 'metadata', 'assets',
   'userId', 'titleId', 'entryId', 'userName', 'sourcePort', 'dataPort', 'discoveryPort', 'preferIpv6',
-  'uploadDisplayName', 'uiLayout', 'jbFirmwareLimit', 'uiLanguage', 'installationId', 'authorizedUser', 'proMode',
+  'uploadDisplayName', 'uiLayout', 'jbFirmwareLimit', 'uiLanguage', 'installationId', 'authorizedUser',
 ];
 const defaults = {
   useRemoteOracle: true,
@@ -35,7 +35,6 @@ const defaults = {
   dataPort: 1005,
   discoveryPort: 1006,
   preferIpv6: false,
-  proMode: false,
   uploadDisplayName: 'GarlicTransfer',
   uiLayout: 'chill',
   jbFirmwareLimit: DEFAULT_JB_FIRMWARE,
@@ -87,7 +86,6 @@ function loadSettings() {
     uiLayout: /^[a-z][a-z0-9-]{0,63}$/.test(stored.uiLayout || '') ? stored.uiLayout : 'chill',
     uiLanguage: i18n.preference(stored.uiLanguage),
     preferIpv6: stored.preferIpv6 === 'true',
-    proMode: stored.proMode === 'true',
     jbFirmwareLimit: normalizeFirmwareLimit(stored.jbFirmwareLimit) || defaults.jbFirmwareLimit,
   };
 }

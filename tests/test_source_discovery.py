@@ -162,6 +162,26 @@ class DisplayNameConfigurationTests(unittest.TestCase):
                     dt_source.configured_host_name()
 
 
+class DeriveSessionTests(unittest.TestCase):
+    def test_ipv6_uses_oracle_keys_by_default(self):
+        sock = SimpleNamespace(family=socket.AF_INET6)
+        with patch.object(dt_source, "LOCAL_PSK", False), \
+             patch.object(dt_source, "derive_with_oracle", return_value="oracle") as oracle, \
+             patch.object(dt_source, "derive_keys", return_value="local") as local:
+            self.assertEqual(dt_source.derive_session(sock, "oracle-host", 9022, b"client", b"server"), "oracle")
+        oracle.assert_called_once_with("oracle-host", 9022, b"client", b"server")
+        local.assert_not_called()
+
+    def test_explicit_ipv6_mode_uses_local_psk(self):
+        sock = SimpleNamespace(family=socket.AF_INET6)
+        with patch.object(dt_source, "LOCAL_PSK", True), \
+             patch.object(dt_source, "derive_with_oracle", return_value="oracle") as oracle, \
+             patch.object(dt_source, "derive_keys", return_value="local") as local:
+            self.assertEqual(dt_source.derive_session(sock, "oracle-host", 9022, b"client", b"server"), "local")
+        local.assert_called_once_with(b"client", b"server")
+        oracle.assert_not_called()
+
+
 class OracleConfigurationTests(unittest.TestCase):
     """The oracle location must come from the app, not a hardcoded LAN address."""
 
@@ -260,7 +280,7 @@ class PowerExchangeTests(unittest.TestCase):
                     try:
                         client, _ = listener.accept()
                         with client:
-                            dt_source.serve_command(client, "unused", 0)
+                            dt_source.serve_command(client, "unused", 0, prepare_ipv6=lambda: None)
                     except EOFError:
                         pass
                     except Exception as exc:
@@ -283,6 +303,7 @@ class PowerExchangeTests(unittest.TestCase):
                 try:
                     from unittest.mock import patch
                     with patch.object(dt_source, "derive_session", side_effect=derive_source), \
+                         patch.object(dt_source, "local_link_local", return_value=dt_source.packed_address("fe80::1234")), \
                          patch("poc.dt_download.derive_with_oracle", side_effect=derive_oracle):
                         channel = DtChannel("127.0.0.1", port, "unused", 0, version=protocol)
                         timer.start()
@@ -292,7 +313,14 @@ class PowerExchangeTests(unittest.TestCase):
                         result, response = channel.response(0x91, sub)
                         self.assertEqual(result, 0)
                         self.assertEqual(struct.unpack_from("<I", response, 32)[0], firmware)
-                        self.assertEqual(struct.unpack_from("<I", response, 44)[0], firmware)
+                        if hardware == 3:
+                            self.assertEqual(struct.unpack_from("<I", response, 40)[0], firmware)
+                            self.assertEqual(struct.unpack_from("<I", response, 44)[0], 0)
+                            self.assertEqual(struct.unpack_from("<I", response, 48)[0], 1)
+                            self.assertEqual(struct.unpack_from("<I", response, 52)[0], firmware)
+                            self.assertEqual(response[56:72], dt_source.packed_address("fe80::1234"))
+                        else:
+                            self.assertEqual(struct.unpack_from("<I", response, 44)[0], firmware)
                 finally:
                     timer.cancel()
                     if channel is not None:
