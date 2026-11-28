@@ -87,10 +87,19 @@
               <tbody id="consoleLocatorRows"></tbody>
             </table>
           </div>
-          <div class="console-locator-current">
+          <div id="consoleTargetGroup" class="console-target-group console-locator-current">
             <label><span id="transferConsoleLabel">Source/Receiving PS5</span>
               <input id="transferConsoleHost" readonly spellcheck="false" placeholder="Choose OFW in the list">
             </label>
+            <div id="consoleNetwork" class="console-network" hidden>
+              <div class="network-actions">
+                <button id="networkRefresh" type="button" disabled>Check network</button>
+                <button id="networkEnable" type="button" title="Windows may briefly reconnect this adapter." hidden>Enable IPv6</button>
+                <button id="firewallHelperBtn" type="button" title="Allow local transfer ports until GarlicTransfer closes.">Allow local network access</button>
+              </div>
+              <span id="networkStatus" role="status"></span>
+              <span id="firewallStatus" role="status"></span>
+            </div>
           </div>
           <p id="consoleLocatorStatus" class="card-hint" role="status" aria-live="polite">Find PlayStations to choose a console.</p>
           <details class="manual-drawer">
@@ -451,13 +460,6 @@
             <label class="checkbox wide"><input id="preferIpv6" type="checkbox" checked> Use IPv6 channel (default)</label>
           </div>
         </details>
-
-        <section id="firewallSettings" class="card" hidden>
-          <h3>Windows network access</h3>
-          <p class="card-hint">If discovery or pairing is blocked, allow temporary local-network access. Rules are removed when GarlicTransfer closes.</p>
-          <button id="firewallHelperBtn" type="button">Allow local network access</button>
-          <p id="firewallStatus" class="card-hint" aria-live="polite"></p>
-        </section>
 
         <div class="card settings-footer">
           <button id="settingsSave" class="btn-primary" type="button">Save settings</button>

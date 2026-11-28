@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('saveTransfer', {
   pairingAvailable: true,
   firewallAvailable: process.platform === 'win32',
   runFirewallHelper: () => ipcRenderer.invoke('windows:firewall-helper'),
+  getNetworkStatus: host => ipcRenderer.invoke('windows:network-status', host),
+  enableIpv6: (host, interfaceIndex) => ipcRenderer.invoke('windows:enable-ipv6', host, interfaceIndex),
   chooseOutput: () => ipcRenderer.invoke('dialog:output'),
   chooseMetadata: () => ipcRenderer.invoke('dialog:metadata'),
   chooseAssets: () => ipcRenderer.invoke('dialog:assets'),

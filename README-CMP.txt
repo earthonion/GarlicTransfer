@@ -157,6 +157,12 @@ Choose JB for the local helper. This fills both JB helper PS5 IPv4 and Local
 oracle IP; it does not change Use GarlicWorker or the transfer console.
 Choose OFW for the transfer console: Source PS5 for PS5 to PC, Receiving PS5
 for PC to PS5. Scanning alone does not assign a console or start a transfer.
+On Windows, open Locate PS5 to check the PC adapter, network profile and local
+IPv6 status using the buttons beside Source/Receiving PS5.
+Enable IPv6 appears when IPv6 is off. Windows asks for administrator approval
+before changing that adapter. The setting stays enabled when Garlic closes.
+Allow local network access opens temporary transfer ports for this session
+on Public and Private networks. Both actions work directly from Garlic.
 Settings / Oracle / Maximum JB firmware defaults to 13.60. PS5s at or below
 the limit can be selected as JB; higher or unknown firmware cannot. Set a
 new limit, such as 14.22, and Save Settings when a newer firmware is supported.

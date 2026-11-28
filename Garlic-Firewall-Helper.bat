@@ -170,7 +170,7 @@ try {
         Write-Host @'
 
 SETUP
-  Easiest: open Garlic Settings and click Allow local network access.
+  In Garlic, use the firewall button beside Source/Receiving PS5.
   Accept the Windows UAC prompt; the helper attaches to the running app.
   Manual alternative: close Garlic and double-click this BAT beside its EXE.
   Garlic runs as your current user. Close Garlic normally when finished.

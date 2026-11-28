@@ -12,7 +12,7 @@ const originalRequire = createRequire(mainPath);
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // Function Transfer Fixture
-function fixture(t, pendingHelper = false) {
+function fixture(t, pendingHelper = false, network) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'garlic-session-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.writeFileSync(path.join(root, 'metadata.db'), 'fixture');
@@ -26,6 +26,7 @@ function fixture(t, pendingHelper = false) {
   }
   const context = vm.createContext({
     require(name) {
+      if (network && name === './windows_network.cjs') return network;
       if (name === 'electron') return { app: { getPath: () => root, whenReady: () => ({ then() {} }), on() {} },
         ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, dialog: {}, shell: {} };
       if (name === 'node:child_process') return { spawn(command, args) {
@@ -46,7 +47,7 @@ function fixture(t, pendingHelper = false) {
       if (name === './config.cjs') return { loadSettings() {}, saveSettings() {} };
       return originalRequire(name);
     },
-    __dirname: path.dirname(mainPath), process, Buffer, console, setTimeout, clearTimeout,
+    __dirname: path.dirname(mainPath), process: network ? { platform: 'win32' } : process, Buffer, console, setTimeout, clearTimeout,
   });
   vm.runInContext(fs.readFileSync(mainPath, 'utf8'), context, { filename: mainPath });
   const options = { accountId: '0833114e9585c53c', hostId: 'AABBCCDDEEFF', systemVersion: '13600000', output: root, assets: root, metadata: path.join(root, 'metadata.db'),
@@ -54,6 +55,30 @@ function fixture(t, pendingHelper = false) {
     externalImage: '/staged', titleId: 'PPSA12345', localPcUploadId: 'owned-stage' };
   return { context, root, options, children, releases, helpers, resolveHelper, handlers };
 }
+
+test('the Windows enable action accepts the app page and excludes overlapping transfers', async t => {
+  const { pathToFileURL } = require('node:url');
+  let rejectEnable;
+  const network = { enableIpv6: () => new Promise((_resolve, reject) => { rejectEnable = reject; }) };
+  const f = fixture(t, false, network);
+  const frame = { url: pathToFileURL(path.join(path.dirname(mainPath), 'index.html')).href + '?language=en' };
+  const sender = { mainFrame: frame, isDestroyed: () => false, send() {} };
+  f.context.appWindow = { isDestroyed: () => false, webContents: sender };
+  vm.runInContext('window = appWindow', f.context);
+  const enable = f.handlers.get('windows:enable-ipv6');
+  await assert.rejects(enable({ sender, senderFrame: { ...frame } }, '192.0.2.40', 7), /GarlicTransfer window/);
+  const event = { sender, senderFrame: frame };
+  const pending = enable(event, '192.0.2.40', 7);
+  for (const start of ['startUpload', 'startPairing', 'startDownload']) {
+    assert.throws(() => f.context[start](f.options), /IPv6 change/);
+  }
+  await assert.rejects(enable(event, '192.0.2.40', 7), /IPv6 change/);
+  rejectEnable(new Error('Canceled'));
+  await assert.rejects(pending, /Canceled/);
+  f.context.startDownload(f.options);
+  await assert.rejects(enable(event, '192.0.2.40', 7), /Finish the active transfer/);
+  f.context.stopActive();
+});
 
 test('canceling during shared helper startup cannot spawn an orphan download', async t => {
   const f = fixture(t, true);

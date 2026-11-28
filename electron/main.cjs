@@ -6,6 +6,9 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+const { getNetworkStatus, enableIpv6 } = require('./windows_network.cjs');
+const { allowFirewallAccess } = require('./windows_firewall.cjs');
 const { startRemoteOracle, stopRemoteOracle } = require('./remote_oracle.cjs');
 const { loadSettings, saveSettings } = require('./config.cjs');
 const { authorizeDevice } = require('./device_auth.cjs');
@@ -13,7 +16,7 @@ const { checkForUpdates } = require('./updates.cjs');
 const i18n = require('./i18n.js');
 const { titleName } = require('./titles.cjs');
 const { pairingPrefixPath, existingPairingPrefix, pairingInfo, pairingInfos } = require('./pairing_store.cjs');
-const { registerSaveEditor, stopSaveJobs } = require('./save_editor.cjs');
+const { registerSaveEditor, stopSaveJobs, hasActiveSaveJob } = require('./save_editor.cjs');
 const { LocalPcStore } = require('./local_pc.cjs');
 const { AccountStore } = require('./account_store.cjs');
 const { registerAccountClose } = require('./account_close.cjs');
@@ -23,6 +26,7 @@ const { resourceRoot, localWorkerElf, workDir, pythonBin } = require('./paths.cj
 let window;
 let interfaceLanguage = 'en';
 let active = null;
+let ipv6ChangePending = false;
 let oracleRelay = null;
 let confirmationPending = false;
 let deviceAuthorizationPending = false;
@@ -121,8 +125,19 @@ function pairingSessionRoot() {
   return pairingSessionDirectory;
 }
 
-function startDownload(options) {
+// Function Transfer Guard
+function requireTransferAvailable() {
+  requireStableNetwork();
   if (active) throw new Error('another transfer is already running');
+}
+
+// Function Adapter Guard
+function requireStableNetwork() {
+  if (ipv6ChangePending) throw new Error('Wait for the IPv6 change to finish.');
+}
+
+function startDownload(options) {
+  requireTransferAvailable();
   // The renderer never chooses a local credential file. Resolve it only from
   // the console identity reported by discovery, inside the main process.
   delete options.approvalPrefixPath;
@@ -177,7 +192,7 @@ function startDownload(options) {
 }
 
 function startPairing(options) {
-  if (active) throw new Error('another transfer is already running');
+  requireTransferAvailable();
   if (net.isIP(options.clientHost) !== 4) throw new Error('Discover and select a PS5 IPv4 address first');
   const prefixPath = pairingPrefixPath(pairingSessionRoot(), options);
   fs.mkdirSync(path.dirname(prefixPath), { recursive: true, mode: 0o700 });
@@ -411,7 +426,7 @@ function createMetadata(options, session) {
 }
 
 function startUpload(options) {
-  if (active) throw new Error('another transfer is already running');
+  requireTransferAvailable();
   const releaseStage = options.localPcUploadId ? pcStore.retainUpload(options.localPcUploadId, options.externalImage) : null;
   const session = { kind: 'upload', completed: false, process: null, releaseStage, preparing: true };
   active = session;
@@ -746,22 +761,35 @@ ipcMain.handle('updates:open', (_event, downloadUrl) => {
   }
   return shell.openExternal(downloadUrl);
 });
-ipcMain.handle('windows:firewall-helper', () => {
-  if (process.platform !== 'win32') throw new Error('the firewall helper is only available on Windows');
-  const helper = app.isPackaged
-    ? path.join(path.dirname(app.getPath('exe')), 'Garlic-Firewall-Helper.bat')
-    : path.join(__dirname, '..', 'Garlic-Firewall-Helper.bat');
-  if (!fs.existsSync(helper)) throw new Error('Garlic-Firewall-Helper.bat is missing beside GarlicTransfer.exe');
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.env.ComSpec || 'cmd.exe', [
-      '/d', '/s', '/c', 'start', '', helper, '/attach', String(process.pid),
-    ], { cwd: path.dirname(helper), detached: true, stdio: 'ignore', windowsHide: false });
-    child.once('error', reject);
-    child.once('spawn', () => {
-      child.unref();
-      resolve();
-    });
-  });
+// Function Network Actions
+function requireNetworkWindow(event) {
+  if (process.platform !== 'win32') throw new Error('Network settings are only available on Windows.');
+  const frame = event.senderFrame;
+  const appPage = pathToFileURL(path.join(__dirname, 'index.html')).href;
+  if (!window || window.isDestroyed() || event.sender !== window.webContents ||
+      !frame || frame !== event.sender.mainFrame || frame.url.split(/[?#]/, 1)[0] !== appPage) {
+    throw new Error('Open network settings from the GarlicTransfer window.');
+  }
+}
+
+ipcMain.handle('windows:firewall-helper', event => {
+  requireNetworkWindow(event);
+  return allowFirewallAccess();
+});
+ipcMain.handle('windows:network-status', (event, host) => {
+  requireNetworkWindow(event);
+  return getNetworkStatus(host);
+});
+ipcMain.handle('windows:enable-ipv6', async (event, host, interfaceIndex) => {
+  requireNetworkWindow(event);
+  requireStableNetwork();
+  if (active || hasActiveSaveJob()) throw new Error('Finish the active transfer or save operation before enabling IPv6.');
+  ipv6ChangePending = true;
+  try {
+    return await enableIpv6(host, interfaceIndex);
+  } finally {
+    ipv6ChangePending = false;
+  }
 });
 ipcMain.handle('transfer:discover', (_event, options) => getConsoles(options));
 ipcMain.handle('transfer:power', () => {
@@ -842,6 +870,7 @@ registerSaveEditor({
   resourceRoot,
   workDir,
   pcStore,
+  requireStableNetwork,
   ensureLocalWorker: host => localHelper.ensure(host),
 });
 

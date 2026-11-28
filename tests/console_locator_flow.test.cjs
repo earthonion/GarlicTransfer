@@ -24,7 +24,7 @@ async function until(condition, message) {
 }
 
 // Function Test Locator
-async function app(t, settings = {}) {
+async function app(t, settings = {}, bridge = {}) {
   const errors = [], calls = { discover: [], pairing: [], closeFlush: null, closeResume: null };
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', error => errors.push(error.message));
@@ -41,6 +41,7 @@ async function app(t, settings = {}) {
       window.saveTransfer.getSettings = async () => ({ ...await getSettings(), oracleHost: '', jbFirmwareLimit: '13.60', ...settings });
       window.saveTransfer.discover = async value => { calls.discover.push(plain(value)); return discover(value); };
       window.saveTransfer.pairingStatus = async identity => { calls.pairing.push(plain(identity)); return true; };
+      Object.assign(window.saveTransfer, bridge);
       window.saveAccounts = {
         getState: async () => ({ accounts: [], selectedId: '', useCurrent: true, displayMode: 'name' }),
         onBeforeClose: (flush, resume) => { calls.closeFlush = flush; calls.closeResume = resume; },
@@ -71,6 +72,94 @@ function setLimit(f, value) {
   const input = f.document.getElementById('jbFirmwareLimit');
   input.value = value; input.dispatchEvent(new f.window.Event('input', { bubbles: true }));
 }
+
+test('Windows network controls stay beside the selected console on Locate PS5 in both layouts', async t => {
+  const checks = [], changes = [];
+  let completeEnable;
+  const adapter = { interfaceAlias: 'Ethernet', interfaceIndex: 12, profile: 'Public', ipv6Enabled: false, linkLocalAddress: '' };
+  const ready = { ...adapter, ipv6Enabled: true, linkLocalAddress: 'fe80::123%12' };
+  const f = await app(t, { interface: 'wlp4s0' }, {
+    firewallAvailable: true,
+    getNetworkStatus: async host => { checks.push(host); return changes.length ? ready : adapter; },
+    enableIpv6: (host, index) => { changes.push([host, index]); return new Promise(resolve => { completeEnable = resolve; }); },
+  });
+  const el = id => f.document.getElementById(id);
+  assert.ok(el('consoleTargetGroup').contains(el('consoleNetwork')));
+  assert.equal(el('firewallHelperBtn').disabled, false);
+  assert.equal(el('networkRefresh').disabled, true);
+  await f.find();
+  radio(f, 'jb', consoles[0].host).click();
+  assert.deepEqual(checks, []);
+  radio(f, 'ofw', consoles[1].host).click();
+  await until(() => !el('networkEnable').hidden, 'Enable did not appear for the disabled adapter');
+  assert.deepEqual(checks, [consoles[1].host]);
+  assert.match(el('networkStatus').textContent, /Ethernet · Public · IPv6 off/);
+  assert.equal(f.window.options().interface, '12');
+  el('settingsSave').click();
+  await until(() => f.window.cmpFixture.calls.settings.length > 0, 'Settings were not saved');
+  assert.equal(f.window.cmpFixture.calls.settings.at(-1).interface, 'wlp4s0');
+  el('interface').value = '33';
+  assert.equal(f.window.options().interface, '33');
+  el('networkEnable').click();
+  for (const id of ['discoverBtn', 'manualConnectBtn', 'downloadBtn', 'uploadBtn', 'pairBtn']) assert.equal(el(id).disabled, true, id);
+  assert.equal(radio(f, 'ofw', consoles[0].host).disabled, true);
+  completeEnable(ready);
+  await until(() => el('networkStatus').textContent.includes('IPv6 ready'), 'Updated IPv6 status was not shown');
+  assert.deepEqual(changes, [[consoles[1].host, 12]]);
+  assert.equal(el('networkEnable').hidden, true);
+  for (const id of ['discoverBtn', 'manualConnectBtn', 'downloadBtn', 'uploadBtn', 'pairBtn']) assert.equal(el(id).disabled, false, id);
+  assert.equal(el('networkStatus').title, ready.linkLocalAddress);
+  assert.equal(f.document.body.dataset.layout, 'cmp');
+  for (const page of ['download', 'upload', 'library', 'settings']) {
+    f.document.querySelector(`[data-page="${page}"]`).click();
+    assert.equal(el('consolePage').hidden, true, page);
+    for (const id of ['networkRefresh', 'networkEnable', 'firewallHelperBtn']) {
+      assert.ok(el('consoleTargetGroup').contains(el(id)), `${id} left Locate PS5 on ${page}`);
+      assert.equal(el('cmpConnection').contains(el(id)), false);
+    }
+  }
+  el('uiLayout').value = 'classic';
+  el('uiLayout').dispatchEvent(new f.window.Event('change'));
+  await until(() => f.document.body.dataset.layout === 'classic', 'Classic layout did not load');
+  f.document.querySelector('[data-page="console"]').click();
+  assert.equal(el('consolePage').hidden, false);
+  assert.equal(el('transferConsoleHost').value, consoles[1].host);
+  el('networkRefresh').click();
+  await until(() => checks.length === 2 && el('networkStatus').textContent.includes('IPv6 ready'), 'Network refresh failed after navigation');
+  el('firewallHelperBtn').click();
+  await until(() => el('firewallStatus').textContent.includes('Local network access is allowed'), 'Firewall action failed after navigation');
+  assert.deepEqual(f.errors, []);
+});
+
+test('pending network checks cannot change the new selection, and browsing locks IPv6 changes', async t => {
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const adapter = { interfaceAlias: 'Wi-Fi', interfaceIndex: 3, profile: 'Private', ipv6Enabled: false, linkLocalAddress: '' };
+  const f = await app(t, {}, { firewallAvailable: true, getNetworkStatus: host => host === consoles[0].host ? pending : adapter });
+  const el = id => f.document.getElementById(id);
+  await f.find();
+  radio(f, 'ofw', consoles[0].host).click();
+  el('manualHost').value = consoles[1].host;
+  el('manualConnectBtn').click();
+  await until(() => !el('networkEnable').disabled, 'Manual target selection did not check the adapter');
+  release({ ...adapter, interfaceAlias: 'Old adapter' });
+  await pending;
+  assert.match(el('networkStatus').textContent, /^Wi-Fi · Private/);
+  f.window.cmpFixture.emit({ type: 'ready', users: [], message: 'Ready to download' });
+  assert.equal(el('networkEnable').disabled, true);
+  f.window.saveTransfer.getNetworkStatus = async () => { throw new Error('route unavailable'); };
+  el('networkRefresh').click();
+  await until(() => el('networkStatus').textContent.includes('route unavailable'), 'Network query error was hidden');
+  assert.equal(el('networkEnable').hidden, true);
+  assert.deepEqual(f.errors, []);
+});
+
+test('console network detection stays hidden off Windows', async t => {
+  const f = await app(t, {}, { getNetworkStatus: () => assert.fail('Unexpected Windows network lookup') });
+  await f.find();
+  radio(f, 'ofw', consoles[1].host).click();
+  assert.equal(f.document.getElementById('consoleNetwork').hidden, true);
+});
 
 for (const remote of [false, true]) {
   test(`JB and OFW choices keep separate identities and preserve ${remote ? 'remote' : 'local'} worker mode`, async t => {

@@ -614,7 +614,7 @@ async function runSaveJob(options) {
 }
 
 // Register save-editor actions.
-function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot, workDir, pcStore, ensureLocalWorker, titleName }) {
+function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot, workDir, pcStore, ensureLocalWorker, titleName, requireStableNetwork }) {
   const userDataRoot = app.getPath('userData');
   const temporaryStore = new SaveTemps(path.join(userDataRoot, 'save-editor'));
 
@@ -713,6 +713,7 @@ function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot,
   // Function Save Operation
   async function saveOperation(event, action) {
     if (jobsClosing) throw new Error('GarlicTransfer is closing.');
+    requireStableNetwork?.();
     if (activeJob) throw new Error('another save operation is already running');
     const controller = new AbortController();
     let completed;
@@ -780,6 +781,7 @@ module.exports = {
   readWorkspaceFile,
   readWorkspacePage,
   registerSaveEditor,
+  hasActiveSaveJob: () => activeJob !== null,
   stopSaveJobs,
   resolveInside,
   runSaveJob,

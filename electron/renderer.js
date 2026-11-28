@@ -8,7 +8,8 @@ const controls = {};
 for (const id of [
   'uiLayout', 'uiLanguage', 'oracleHost', 'interface', 'hardware', 'output', 'metadata', 'assets',
   'useRemoteOracle', 'serverUrl', 'workerKey', 'workerKeyRevision', 'installationId', 'authorizedUser', 'authorizeDeviceBtn', 'deviceAuthStatus', 'deviceAuthFallback', 'deviceAuthUrl', 'deviceAuthCopyBtn', 'deviceAuthCode', 'settingsSave', 'settingsStatus', 'appVersion', 'updateCheckBtn', 'updateOpenBtn', 'updateStatus',
-  'firewallSettings', 'firewallHelperBtn', 'firewallStatus',
+  'firewallHelperBtn', 'firewallStatus',
+  'consoleNetwork', 'networkStatus', 'networkRefresh', 'networkEnable',
   'addExternalFolderBtn', 'externalUploadControls', 'addExternalSaveBtn', 'addExternalZipBtn', 'exportZipBtn', 'externalTitleId', 'userSelect', 'userSelectLabel', 'uploadSaveSelect', 'uploadSaveSelectLabel', 'confirmUploadBtn', 'sourcePort', 'dataPort', 'discoveryPort', 'uploadDisplayName',
   'downloadBtn', 'downloadSelectedBtn', 'uploadBtn', 'finishBtn', 'cancelBtn', 'powerBtn', 'status', 'entries', 'appEntries', 'profileEntries', 'mediaEntries', 'otherEntries', 'log', 'saveSearch',
   'consoleSelect', 'consoleLocatorRows', 'jbFirmwareLimit', 'transferConsoleHost', 'transferConsoleLabel', 'discoverBtn', 'manualHost', 'manualConnectBtn', 'pairBtn', 'pairingState', 'preferIpv6', 'selectAllEntries', 'entryCount', 'powerModal',
@@ -20,6 +21,11 @@ let accountClosing = false;
 let discoveryPending = false;
 let manualConnectionPending = false;
 let firewallPending = false;
+let networkHost = '';
+let networkRequest = 0;
+let networkChecking = false;
+let networkEnabling = false;
+let networkAdapter = null;
 let consoleScanVersion = 0;
 let locatorPairingVersion = 0;
 let selectedPairingVersion = 0;
@@ -146,7 +152,7 @@ function options() {
     profileId: targetIdentityChanged ? '' : controls.consoleSelect.selectedOptions[0]?.dataset.profileId || controls.consoleSelect.selectedOptions[0]?.dataset.hostId || '',
     uiLayout: controls.uiLayout.value,
     systemVersion: targetIdentityChanged ? '' : controls.consoleSelect.selectedOptions[0]?.dataset.firmware || '',
-    interface: controls.interface.value.trim(),
+    interface: transferInterface(clientHost),
     hardware: Number(controls.hardware.value || 0),
     output: controls.output.value.trim() || 'dt_downloads',
     profileRoot: profileRoot || controls.output.value.trim() || 'dt_downloads',
@@ -206,7 +212,12 @@ function selectedLocatorConsole() {
 
 // Function Console Lock
 function consoleSelectionLocked() {
-  return accountClosing || Boolean(activeTransfer) || browseSessionActive;
+  return transferStartLocked() || Boolean(activeTransfer) || browseSessionActive;
+}
+
+// Function Transfer Lock
+function transferStartLocked() {
+  return accountClosing || networkEnabling;
 }
 
 // Function Console List
@@ -226,15 +237,85 @@ function renderConsoleLocator() {
     jbHost: controls.oracleHost.value.trim(), targetHost: changedIdentity ? '' : controls.consoleSelect.value,
     firmwareLimit: limit,
   });
+  selectNetworkHost(targetIdentityChanged || changedIdentity ? '' : controls.consoleSelect.value);
   updateConsoleLocatorBusy();
 }
+
+// Function Network Selection
+function selectNetworkHost(host) {
+  if (!window.saveTransfer.firewallAvailable || host === networkHost) return;
+  networkHost = host;
+  networkAdapter = null;
+  networkRequest++;
+  networkChecking = false;
+  controls.networkStatus.textContent = '';
+  controls.networkStatus.removeAttribute('title');
+  if (host) void checkConsoleNetwork();
+}
+
+// Function Transfer Interface
+function transferInterface(host) {
+  const configured = controls.interface.value.trim();
+  if (networkAdapter && host === networkHost && (!configured || configured === 'wlp4s0')) return String(networkAdapter.interfaceIndex);
+  return configured;
+}
+
+// Function Network Buttons
+function updateNetworkButtons() {
+  controls.networkRefresh.disabled = !networkHost || networkChecking || networkEnabling || accountClosing;
+  controls.networkEnable.hidden = networkAdapter?.ipv6Enabled !== false;
+  controls.networkEnable.disabled = controls.networkEnable.hidden || controls.networkRefresh.disabled
+    || consoleSelectionLocked() || discoveryPending || manualConnectionPending;
+}
+
+// Function Network Status
+async function checkConsoleNetwork(enable = false) {
+  if (!networkHost || (enable && controls.networkEnable.disabled)) return;
+  const request = ++networkRequest;
+  const interfaceIndex = networkAdapter?.interfaceIndex;
+  networkChecking = true;
+  if (enable) {
+    networkEnabling = true;
+    busy(Boolean(activeTransfer), { keepDialogs: true });
+  }
+  networkAdapter = null;
+  updateNetworkButtons();
+  controls.networkStatus.textContent = enable ? uiText('Enabling IPv6…') : uiText('Checking network…');
+  controls.networkStatus.removeAttribute('title');
+  try {
+    const adapter = enable ? await window.saveTransfer.enableIpv6(networkHost, interfaceIndex)
+      : await window.saveTransfer.getNetworkStatus(networkHost);
+    if (request !== networkRequest) return;
+    networkAdapter = adapter;
+    const profile = adapter.profile === 'DomainAuthenticated' ? uiText('Domain') : uiText(adapter.profile || 'Unknown');
+    const ipv6 = adapter.ipv6Enabled === false ? uiText('IPv6 off')
+      : adapter.linkLocalAddress ? uiText('IPv6 ready') : uiText('IPv6 enabled, no link-local address');
+    controls.networkStatus.textContent = [adapter.interfaceAlias, profile, ipv6].join(' · ');
+    if (adapter.linkLocalAddress) controls.networkStatus.title = adapter.linkLocalAddress;
+    controls.networkEnable.textContent = uiText`Enable IPv6 on ${adapter.interfaceAlias}`;
+  } catch (error) {
+    if (request === networkRequest) controls.networkStatus.textContent = enable
+      ? uiText`Could not enable IPv6: ${error.message}` : uiText`Could not check network: ${error.message}`;
+  } finally {
+    if (request === networkRequest) networkChecking = false;
+    if (enable) {
+      networkEnabling = false;
+      busy(Boolean(activeTransfer), { keepDialogs: true });
+    }
+    updateNetworkButtons();
+  }
+}
+controls.networkRefresh.addEventListener('click', () => { if (!controls.networkRefresh.disabled) void checkConsoleNetwork(); });
+controls.networkEnable.addEventListener('click', () => void checkConsoleNetwork(true));
 
 // Function Locator Controls
 function updateConsoleLocatorBusy() {
   consoleLocator?.setBusy(consoleSelectionLocked() || discoveryPending || manualConnectionPending);
-  controls.downloadBtn.disabled = accountClosing || Boolean(activeTransfer) || targetIdentityChanged;
-  controls.uploadBtn.disabled = accountClosing || Boolean(activeTransfer) || targetIdentityChanged;
-  controls.confirmUploadBtn.disabled = accountClosing || Boolean(activeTransfer) || targetIdentityChanged;
+  updateNetworkButtons();
+  const locked = transferStartLocked() || Boolean(activeTransfer) || targetIdentityChanged;
+  controls.downloadBtn.disabled = locked;
+  controls.uploadBtn.disabled = locked;
+  controls.confirmUploadBtn.disabled = locked;
 }
 
 // Function Locator Status
@@ -415,7 +496,7 @@ async function refreshPairingStatus() {
   const identity = { hostId: selected?.dataset.hostId || '', systemVersion: selected?.dataset.firmware || '' };
   const supported = window.saveTransfer.pairingAvailable && Boolean(selected?.value);
   controls.pairingState.classList.remove('paired');
-  controls.pairBtn.disabled = accountClosing || !supported || Boolean(activeTransfer) || browseSessionActive || targetIdentityChanged;
+  controls.pairBtn.disabled = consoleSelectionLocked() || !supported || targetIdentityChanged;
   if (targetIdentityChanged) {
     controls.pairingState.textContent = uiText('Choose the OFW console again to confirm its identity.');
     return;
@@ -476,7 +557,7 @@ function setAccountClosing(value) {
 }
 
 function busy(value, { keepDialogs = false } = {}) {
-  const disabled = Boolean(value) || accountClosing;
+  const disabled = Boolean(value) || transferStartLocked();
   if (disabled) consoleScanVersion++;
   cmpLayout.setBusy(disabled);
   updateCmpConnection();
@@ -784,7 +865,7 @@ function renderEntries() {
 controls.saveSearch.addEventListener('input', renderEntries);
 
 async function browseSaves(forUpload = false) {
-  if (accountClosing) return;
+  if (transferStartLocked()) return;
   if (!forUpload && browseSessionActive) {
     status(uiText('The download session is already open. Select saves from the browser.'));
     return;
@@ -817,7 +898,7 @@ async function browseSaves(forUpload = false) {
 }
 
 async function startDownload(entryIds) {
-  if (accountClosing) return;
+  if (transferStartLocked()) return;
   if (!entryIds.length) {
     status(uiText('Select at least one save to download.'));
     return;
@@ -842,7 +923,7 @@ async function startDownload(entryIds) {
 }
 
 async function startUploadSource() {
-  if (accountClosing) return;
+  if (transferStartLocked()) return;
   if (targetIdentityChanged) { status(uiText('Choose the OFW console again before starting a transfer.')); return; }
   const selectedUser = controls.userSelect.selectedOptions[0];
   const externalSelected = [...controls.uploadSaveSelect.selectedOptions].some((option) => option.value === 'external');
@@ -948,7 +1029,7 @@ function showUploadConfirmation() {
 
 // Prepare upload selection.
 async function startUpload({ entryIds = null, userId = null, external = null } = {}) {
-  if (accountClosing) {
+  if (transferStartLocked()) {
     if (external?.stageId) await releasePcUpload(external.stageId);
     return;
   }
@@ -970,14 +1051,14 @@ async function startUpload({ entryIds = null, userId = null, external = null } =
     browseSessionVersion++;
     dataTransferArmedHost = null;
   }
-  if (accountClosing) { await releasePcUpload(); return; }
+  if (transferStartLocked()) { await releasePcUpload(); return; }
   current.entryIds = [];
   pendingUploadOptions = current;
   const hasExplicitMetadata = Boolean(current.metadata);
   const previousMetadata = current.metadata || folderPaths.metadataPath(current.output, 'metadata.db');
   try {
     const inventory = await window.saveTransfer.inventory(previousMetadata);
-    if (accountClosing) { await releasePcUpload(); return; }
+    if (transferStartLocked()) { await releasePcUpload(); return; }
     availableUsers = inventory.users;
     availableEntries = inventory.entries;
     if (!availableUsers.length) throw new Error('the metadata contains no users');
@@ -986,7 +1067,7 @@ async function startUpload({ entryIds = null, userId = null, external = null } =
     showUploadConfirmation();
     return;
   } catch (error) {
-    if (accountClosing) { await releasePcUpload(); return; }
+    if (transferStartLocked()) { await releasePcUpload(); return; }
     if (hasExplicitMetadata) {
       resetUploadUI();
       status(uiText`Could not read metadata inventory: ${error.message}`);
@@ -1178,7 +1259,7 @@ controls.authorizeDeviceBtn.addEventListener('click', async () => {
 
 function canReloadLanguage() {
   return !accountClosing && !activeTransfer && !browseSessionActive && !finishConfirmationPending
-    && !deviceAuthorizationPending && !discoveryPending && !manualConnectionPending && !firewallPending && !decryptedWorkspace
+    && !deviceAuthorizationPending && !discoveryPending && !manualConnectionPending && !firewallPending && !networkEnabling && !decryptedWorkspace
     && !document.querySelector('dialog[open]');
 }
 
@@ -1198,7 +1279,7 @@ controls.settingsSave.addEventListener('click', async () => {
   try {
     controls.settingsStatus.textContent = uiText('Saving settings…');
     languageChanged = await window.saveTransfer.saveSettings({
-      ...current, output: profileRoot || current.output, uiLanguage: controls.uiLanguage.value,
+      ...current, interface: controls.interface.value.trim(), output: profileRoot || current.output, uiLanguage: controls.uiLanguage.value,
     });
     if (request !== settingsSaveVersion || accountClosing) return;
     const latest = controls.jbFirmwareLimit?.value ?? consoleInfo.DEFAULT_JB_FIRMWARE;
@@ -1226,17 +1307,17 @@ controls.settingsSave.addEventListener('click', async () => {
   }
 });
 
-controls.firewallSettings.hidden = !window.saveTransfer.firewallAvailable;
+controls.consoleNetwork.hidden = !window.saveTransfer.firewallAvailable;
 controls.firewallHelperBtn.addEventListener('click', async () => {
   if (accountClosing || firewallPending) return;
   firewallPending = true;
   controls.firewallHelperBtn.disabled = true;
-  controls.firewallStatus.textContent = uiText('Opening the firewall helper…');
+  controls.firewallStatus.textContent = uiText('Requesting Windows permission for local network access…');
   try {
     await window.saveTransfer.runFirewallHelper();
-    controls.firewallStatus.textContent = uiText('Accept the Windows permission prompt. The helper will attach to GarlicTransfer and remove its rules when the app closes.');
+    controls.firewallStatus.textContent = uiText('Local network access is allowed until GarlicTransfer closes.');
   } catch (error) {
-    controls.firewallStatus.textContent = uiText`Could not open the firewall helper: ${error.message}`;
+    controls.firewallStatus.textContent = uiText`Could not allow local network access: ${error.message}`;
   } finally {
     firewallPending = false;
     controls.firewallHelperBtn.disabled = accountClosing;
@@ -1284,6 +1365,7 @@ async function checkForUpdatesOnStartup() {
   } catch {}
 }
 
+
 async function loadSettings() {
   const settings = await window.saveTransfer.getSettings();
   for (const [name, value] of Object.entries(settings)) {
@@ -1309,7 +1391,7 @@ loadSettings();
 checkForUpdatesOnStartup();
 
 controls.pairBtn.addEventListener('click', async () => {
-  if (accountClosing) return;
+  if (transferStartLocked()) return;
   const current = options();
   if (!current.clientHost) {
     status(uiText('Discover and select the PS5 first.'));

@@ -336,7 +336,14 @@ button:disabled { opacity: .4; cursor: default; }
 .console-locator-pairing { white-space: nowrap; }
 .console-locator-pairing[data-pairing="paired"] { color: inherit; box-shadow: inset 3px 0 var(--success); }
 .console-locator-pairing[data-pairing="previous"] { color: inherit; box-shadow: inset 3px 0 var(--gold); }
-.console-locator-current { margin-top: 14px; max-width: 340px; }
+.console-locator-current { margin-top: 14px; }
+.console-target-group { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
+.console-target-group > label { flex: 1 1 180px; max-width: 340px; }
+.console-network { align-self: flex-end; min-width: 0; max-width: 100%; }
+.network-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.network-actions button { max-width: 100%; overflow-wrap: anywhere; }
+.console-network [role="status"] { display: block; contain: inline-size; font-size: 12px; overflow-wrap: anywhere; }
+.console-network [role="status"]:not(:empty) { margin-top: 5px; }
 .jb-firmware-setting { max-width: 220px; margin-bottom: 8px; }
 .manual-drawer { margin-top: 14px; }
 .manual-drawer summary {
