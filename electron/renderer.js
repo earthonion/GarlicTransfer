@@ -7,7 +7,7 @@ const byId = (id) => document.getElementById(id);
 const controls = {};
 for (const id of [
   'uiLayout', 'uiLanguage', 'oracleHost', 'interface', 'hardware', 'output', 'metadata', 'assets',
-  'useRemoteOracle', 'serverUrl', 'workerKey', 'workerKeyRevision', 'installationId', 'authorizedUser', 'authorizeDeviceBtn', 'deviceAuthStatus', 'deviceAuthFallback', 'deviceAuthUrl', 'deviceAuthCopyBtn', 'deviceAuthCode', 'settingsSave', 'settingsStatus', 'appVersion',
+  'useRemoteOracle', 'serverUrl', 'workerKey', 'workerKeyRevision', 'installationId', 'authorizedUser', 'authorizeDeviceBtn', 'deviceAuthStatus', 'deviceAuthFallback', 'deviceAuthUrl', 'deviceAuthCopyBtn', 'deviceAuthCode', 'settingsSave', 'settingsStatus', 'appVersion', 'updateCheckBtn', 'updateOpenBtn', 'updateStatus',
   'firewallSettings', 'firewallHelperBtn', 'firewallStatus',
   'addExternalFolderBtn', 'externalUploadControls', 'addExternalSaveBtn', 'addExternalZipBtn', 'exportZipBtn', 'externalTitleId', 'userSelect', 'userSelectLabel', 'uploadSaveSelect', 'uploadSaveSelectLabel', 'confirmUploadBtn', 'sourcePort', 'dataPort', 'discoveryPort', 'uploadDisplayName',
   'downloadBtn', 'downloadSelectedBtn', 'uploadBtn', 'finishBtn', 'cancelBtn', 'powerBtn', 'status', 'entries', 'appEntries', 'profileEntries', 'mediaEntries', 'otherEntries', 'log', 'saveSearch',
@@ -1240,6 +1240,36 @@ controls.firewallHelperBtn.addEventListener('click', async () => {
   } finally {
     firewallPending = false;
     controls.firewallHelperBtn.disabled = accountClosing;
+  }
+});
+
+let updateDownloadUrl = '';
+controls.updateCheckBtn.addEventListener('click', async () => {
+  controls.updateCheckBtn.disabled = true;
+  controls.updateOpenBtn.hidden = true;
+  controls.updateStatus.textContent = uiText('Checking for updates…');
+  try {
+    const result = await window.saveTransfer.checkForUpdates();
+    updateDownloadUrl = result.downloadUrl;
+    controls.updateOpenBtn.hidden = !result.updateAvailable;
+    controls.updateStatus.textContent = result.updateAvailable
+      ? uiText`Version ${result.latestVersion} is available.`
+      : uiText('You are up to date.');
+  } catch (error) {
+    controls.updateStatus.textContent = uiText`Could not check for updates: ${error.message}`;
+  } finally {
+    controls.updateCheckBtn.disabled = false;
+  }
+});
+controls.updateOpenBtn.addEventListener('click', async () => {
+  if (!updateDownloadUrl) return;
+  controls.updateOpenBtn.disabled = true;
+  try {
+    await window.saveTransfer.openUpdate(updateDownloadUrl);
+  } catch (error) {
+    controls.updateStatus.textContent = uiText`Could not open the download page: ${error.message}`;
+  } finally {
+    controls.updateOpenBtn.disabled = false;
   }
 });
 

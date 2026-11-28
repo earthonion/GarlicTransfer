@@ -79,6 +79,8 @@ contextBridge.exposeInMainWorld('saveTransfer', {
   },
   reloadLanguage: () => ipcRenderer.invoke('settings:reload-language'),
   version: () => ipcRenderer.invoke('app:version'),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  openUpdate: (downloadUrl) => ipcRenderer.invoke('updates:open', downloadUrl),
   onEvent: (callback) => {
     const listener = (_event, detail) => callback(detail);
     ipcRenderer.on('transfer:event', listener);

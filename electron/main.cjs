@@ -9,6 +9,7 @@ const path = require('node:path');
 const { startRemoteOracle, stopRemoteOracle } = require('./remote_oracle.cjs');
 const { loadSettings, saveSettings } = require('./config.cjs');
 const { authorizeDevice } = require('./device_auth.cjs');
+const { checkForUpdates } = require('./updates.cjs');
 const i18n = require('./i18n.js');
 const { titleName } = require('./titles.cjs');
 const { pairingPrefixPath, existingPairingPrefix, pairingInfo, pairingInfos } = require('./pairing_store.cjs');
@@ -738,6 +739,13 @@ ipcMain.handle('local:import', (_event, { assets, entryId, filename, source, loc
   return runLocalSaveOperation('import', [assets, String(entryId), filename, source]);
 });
 ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.handle('updates:check', () => checkForUpdates(app.getVersion()));
+ipcMain.handle('updates:open', (_event, downloadUrl) => {
+  if (typeof downloadUrl !== 'string' || !/^https:\/\/github\.com\/earthonion\/GarlicTransfer\/releases\//.test(downloadUrl)) {
+    throw new Error('Invalid update download URL');
+  }
+  return shell.openExternal(downloadUrl);
+});
 ipcMain.handle('windows:firewall-helper', () => {
   if (process.platform !== 'win32') throw new Error('the firewall helper is only available on Windows');
   const helper = app.isPackaged
