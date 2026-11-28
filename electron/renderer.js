@@ -1273,6 +1273,17 @@ controls.updateOpenBtn.addEventListener('click', async () => {
   }
 });
 
+async function checkForUpdatesOnStartup() {
+  try {
+    const result = await window.saveTransfer.checkForUpdates();
+    if (!result.updateAvailable) return;
+    updateDownloadUrl = result.downloadUrl;
+    controls.updateOpenBtn.hidden = false;
+    controls.updateStatus.textContent = uiText`Update Available! Version ${result.latestVersion}`;
+    status(uiText`Update Available! Version ${result.latestVersion}`);
+  } catch {}
+}
+
 async function loadSettings() {
   const settings = await window.saveTransfer.getSettings();
   for (const [name, value] of Object.entries(settings)) {
@@ -1295,6 +1306,7 @@ async function loadSettings() {
 }
 controls.consoleSelect.addEventListener('change', applyConsoleProfile);
 loadSettings();
+checkForUpdatesOnStartup();
 
 controls.pairBtn.addEventListener('click', async () => {
   if (accountClosing) return;

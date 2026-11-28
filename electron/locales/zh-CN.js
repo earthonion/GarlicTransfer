@@ -191,6 +191,7 @@
     'Open download': '打开下载页面',
     'Checking for updates…': '正在检查更新…',
     'You are up to date.': '已是最新版本。',
+    'Update Available! Version {0}': '有可用更新！版本 {0}',
     'Settings are stored in config.ini.': '设置保存在 config.ini 中。',
     'Activity Log': '活动日志',
     'Add account': '添加账号',
