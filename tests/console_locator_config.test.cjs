@@ -69,6 +69,20 @@ test('all pre-revision keys migrate while newly saved custom keys persist', t =>
   assert.equal(restored.authorizedUser, 'new-user');
 });
 
+test('IPv6 defaults migrate older configurations once and preserve later opt-out', t => {
+  const f = fixture(t);
+  let settings = f.api.loadSettings();
+  assert.equal(settings.preferIpv6, true);
+  assert.equal(settings.ipv6DefaultRevision, 1);
+  fs.writeFileSync(f.file, 'preferIpv6=false\n');
+  settings = f.api.loadSettings();
+  assert.equal(settings.preferIpv6, true);
+  f.api.saveSettings({ ...settings, preferIpv6: false });
+  const restored = f.load().loadSettings();
+  assert.equal(restored.preferIpv6, false);
+  assert.equal(restored.ipv6DefaultRevision, 1);
+});
+
 test('the JB limit is normalized and persists without changing other settings', t => {
   const f = fixture(t);
   const settings = { ...f.api.loadSettings(), oracleHost: '192.0.2.99', serverUrl: 'https://example.invalid',

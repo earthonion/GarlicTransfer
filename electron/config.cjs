@@ -13,7 +13,7 @@ const fields = [
   'useRemoteOracle', 'serverUrl', 'workerKey', 'workerKeyRevision', 'oracleHost', 'oraclePort',
   'interface', 'hardware', 'output', 'metadata', 'assets',
   'userId', 'titleId', 'entryId', 'userName', 'sourcePort', 'dataPort', 'discoveryPort', 'preferIpv6',
-  'uploadDisplayName', 'uiLayout', 'jbFirmwareLimit', 'uiLanguage', 'installationId', 'authorizedUser',
+  'uploadDisplayName', 'uiLayout', 'jbFirmwareLimit', 'uiLanguage', 'installationId', 'authorizedUser', 'ipv6DefaultRevision',
 ];
 const defaults = {
   useRemoteOracle: true,
@@ -35,6 +35,7 @@ const defaults = {
   dataPort: 1005,
   discoveryPort: 1006,
   preferIpv6: true,
+  ipv6DefaultRevision: 1,
   uploadDisplayName: 'GarlicTransfer',
   uiLayout: 'chill',
   jbFirmwareLimit: DEFAULT_JB_FIRMWARE,
@@ -67,6 +68,7 @@ function loadSettings() {
   const storedWorkerKey = String(stored.workerKey || '').trim();
   const storedWorkerKeyRevision = Number(stored.workerKeyRevision || 0);
   const hasCurrentWorkerKey = storedWorkerKeyRevision === defaults.workerKeyRevision && storedWorkerKey;
+  const storedIpv6DefaultRevision = Number(stored.ipv6DefaultRevision || 0);
   return {
     ...defaults,
     ...stored,
@@ -85,7 +87,10 @@ function loadSettings() {
     discoveryPort: Number(stored.discoveryPort || defaults.discoveryPort),
     uiLayout: /^[a-z][a-z0-9-]{0,63}$/.test(stored.uiLayout || '') ? stored.uiLayout : 'chill',
     uiLanguage: i18n.preference(stored.uiLanguage),
-    preferIpv6: stored.preferIpv6 === undefined ? defaults.preferIpv6 : stored.preferIpv6 === 'true',
+    ipv6DefaultRevision: defaults.ipv6DefaultRevision,
+    preferIpv6: storedIpv6DefaultRevision >= defaults.ipv6DefaultRevision
+      ? (stored.preferIpv6 === undefined ? defaults.preferIpv6 : stored.preferIpv6 === 'true')
+      : true,
     jbFirmwareLimit: normalizeFirmwareLimit(stored.jbFirmwareLimit) || defaults.jbFirmwareLimit,
   };
 }
@@ -98,6 +103,7 @@ function saveSettings(settings) {
     const value = field === 'uiLayout' ? (/^[a-z][a-z0-9-]{0,63}$/.test(settings[field] || '') ? settings[field] : 'chill')
       : field === 'uiLanguage' ? i18n.preference(settings[field])
       : field === 'workerKeyRevision' ? defaults.workerKeyRevision
+      : field === 'ipv6DefaultRevision' ? defaults.ipv6DefaultRevision
       : field === 'useRemoteOracle' ? Boolean(settings[field]) : field === 'jbFirmwareLimit' ? limit : settings[field];
     lines.push(`${field}=${value ?? ''}`);
   }
