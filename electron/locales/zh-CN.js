@@ -182,7 +182,7 @@
     'Source command port': '源端命令端口',
     'Source data port': '源端数据端口',
     'Discovery UDP port': '搜索用 UDP 端口',
-    'Use IPv6 channel (advanced; IPv4 is the proven default)': '使用 IPv6 通道（高级选项，默认使用已验证的 IPv4）',
+    'Use IPv6 channel (default)': '使用 IPv6 通道（默认）',
     'Windows network access': 'Windows 网络访问',
     'If discovery or pairing is blocked, allow temporary local-network access. Rules are removed when GarlicTransfer closes.': '如果搜索或配对受阻，可临时允许局域网访问。关闭 GarlicTransfer 时会移除规则。',
     'Allow local network access': '允许局域网访问',

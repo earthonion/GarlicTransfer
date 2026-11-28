@@ -380,6 +380,7 @@ test('per-console pairing details ignore stale results and refresh after pairing
 test('a cold lowercase discovery preserves its profile and armed session through an uppercase rescan', async t => {
   const f = await app(t);
   const { document, window } = f;
+  document.getElementById('preferIpv6').checked = false;
   f.setDiscover(async () => [{ ...consoles[0], type: ' ps5 ' }, { ...consoles[1], hostId: 'aabbccddeeff' }]);
   await f.find(); radio(f, 'ofw', consoles[1].host).click(); radio(f, 'jb', consoles[0].host).click();
   const selected = document.getElementById('consoleSelect').selectedOptions[0];

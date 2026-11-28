@@ -34,7 +34,7 @@ const defaults = {
   sourcePort: 1004,
   dataPort: 1005,
   discoveryPort: 1006,
-  preferIpv6: false,
+  preferIpv6: true,
   uploadDisplayName: 'GarlicTransfer',
   uiLayout: 'chill',
   jbFirmwareLimit: DEFAULT_JB_FIRMWARE,
@@ -85,7 +85,7 @@ function loadSettings() {
     discoveryPort: Number(stored.discoveryPort || defaults.discoveryPort),
     uiLayout: /^[a-z][a-z0-9-]{0,63}$/.test(stored.uiLayout || '') ? stored.uiLayout : 'chill',
     uiLanguage: i18n.preference(stored.uiLanguage),
-    preferIpv6: stored.preferIpv6 === 'true',
+    preferIpv6: stored.preferIpv6 === undefined ? defaults.preferIpv6 : stored.preferIpv6 === 'true',
     jbFirmwareLimit: normalizeFirmwareLimit(stored.jbFirmwareLimit) || defaults.jbFirmwareLimit,
   };
 }
