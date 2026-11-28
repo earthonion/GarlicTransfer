@@ -4,17 +4,20 @@ const { JSDOM } = require('jsdom');
 const { create } = require('../electron/workspace_tree.js');
 
 // Function Tree Fixture
-function fixture(t, busy = () => false) {
+function fixture(t, busy = () => false, getWorkspaceActions = () => []) {
   const dom = new JSDOM('<div class="workspace-files"><table><tbody id="workspaceFiles"></tbody></table></div>');
   t.after(() => dom.window.close());
   const document = dom.window.document, container = document.getElementById('workspaceFiles');
-  const opened = [], actions = [];
-  const tree = create(document, container, { onOpen: file => opened.push(file), onAction: (action, file) => actions.push([action, file]), isBusy: busy });
+  const opened = [], actions = [], selected = [];
+  const tree = create(document, container, {
+    onSelect: file => selected.push(file), onOpen: file => opened.push(file),
+    onAction: (action, file) => actions.push([action, file]), isBusy: busy, getWorkspaceActions,
+  });
   const file = path => [...container.querySelectorAll('tr[data-file-path]')].find(row => row.dataset.filePath === path);
   const folder = path => [...container.querySelectorAll('tr[data-folder-path]')].find(row => row.dataset.folderPath === path);
   const key = (row, value, options = {}) => row.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: value, bubbles: true, cancelable: true, ...options }));
   const context = row => row.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10000, clientY: 10000 }));
-  return { dom, document, container, tree, opened, actions, file, folder, key, context, menu: document.getElementById('workspaceFileContextMenu') };
+  return { dom, document, container, tree, opened, selected, actions, file, folder, key, context, menu: document.getElementById('workspaceFileContextMenu') };
 }
 const files = () => [
   { path: 'sdimg_sce_sdmemory/memory.dat', size: 8192, protected: false },
@@ -58,14 +61,17 @@ test('folder toggles hide descendants without opening a file or removing its row
   assert.equal(root.getAttribute('aria-expanded'), 'true');
 });
 
-test('click, Enter and Space open only the requested leaf with current file data', t => {
+test('selecting and opening use the requested leaf with current file data', t => {
   const f = fixture(t), input = files(); f.tree.render(input, '', 'save');
   const memory = f.file(input[0].path);
   memory.click(); f.key(memory, 'Enter'); f.key(memory, ' ');
-  assert.deepEqual(f.opened, [input[0], input[0], input[0]]);
+  assert.deepEqual(f.opened, [input[0]]);
+  assert.deepEqual(f.selected, [input[0], input[0]]);
   const refreshed = input.map(file => ({ ...file, size: file.size + 1 }));
   f.tree.render(refreshed, input[0].path, 'save'); memory.click();
-  assert.equal(f.opened[3], refreshed[0]);
+  assert.equal(f.selected[2], refreshed[0]);
+  memory.dispatchEvent(new f.dom.window.MouseEvent('dblclick', { bubbles: true }));
+  assert.equal(f.opened[1], refreshed[0]);
 });
 
 test('right-click Replace targets a leaf without opening or reading it first', t => {
@@ -137,6 +143,29 @@ test('keyboard context menus navigate actions, Escape restores row focus and out
   f.context(row); f.dom.window.dispatchEvent(new f.dom.window.Event('resize')); assert.equal(f.menu.hidden, true);
 });
 
+test('moving focus or selection leaves unrelated tree rows untouched', t => {
+  const f = fixture(t), input = Array.from({ length: 100 }, (_, index) => ({ path: `file${index}.dat`, size: 1 }));
+  f.tree.render(input, input[0].path, 'save');
+  const first = f.file(input[0].path), next = f.file(input[1].path), last = f.file(input[99].path);
+  const observer = new f.dom.window.MutationObserver(() => {});
+  observer.observe(f.container, { subtree: true, attributes: true });
+  const changedRows = () => new Set(observer.takeRecords().map(record => record.target));
+
+  f.key(first, 'ArrowDown');
+  assert.equal(f.document.activeElement, next);
+  assert.deepEqual(changedRows(), new Set([first, next]));
+  assert.equal(first.getAttribute('aria-selected'), 'true');
+
+  f.key(next, ' ');
+  assert.deepEqual(changedRows(), new Set([first, next]));
+  assert.equal(next.getAttribute('aria-selected'), 'true');
+  last.click();
+  assert.deepEqual(changedRows(), new Set([next, last]));
+  assert.equal(next.getAttribute('aria-selected'), 'false');
+  assert.deepEqual([...f.container.querySelectorAll('[tabindex="0"], .selected')], [last]);
+  observer.disconnect();
+});
+
 test('busy work blocks leaf, folder and menu actions and closes a visible menu', t => {
   let externalBusy = false;
   const f = fixture(t, () => externalBusy), input = files(); f.tree.render(input, '', 'save');
@@ -190,5 +219,69 @@ test('file names use safe text and duplicate paths do not create duplicate leave
   assert.equal(f.container.querySelector('img'), null);
   assert.equal(f.folder('<img src=x>').querySelector('.workspace-tree-label').textContent, '<img src=x>');
   assert.equal(f.file(value.path).querySelector('.workspace-tree-label').textContent, '"memory".dat');
-  f.file(value.path).click(); assert.equal(f.opened[0], value);
+  f.file(value.path).click(); assert.equal(f.selected[0], value);
+  assert.deepEqual(f.opened, []);
+});
+
+test('single click and Space select a file while double click, Enter and Edit open it', t => {
+  const f = fixture(t), input = files(); f.tree.render(input, '', 'save');
+  const row = f.file(input[0].path);
+  row.click();
+  assert.equal(f.selected[0], input[0]);
+  assert.equal(row.getAttribute('aria-selected'), 'true');
+  assert.deepEqual(f.opened, []);
+  f.key(row, ' ');
+  assert.equal(f.selected.length, 2); assert.deepEqual(f.opened, []);
+  row.dispatchEvent(new f.dom.window.MouseEvent('dblclick', { bubbles: true }));
+  f.key(row, 'Enter');
+  f.context(row); f.menu.querySelector('[data-action="edit"]').click();
+  assert.deepEqual(f.opened, [input[0], input[0], input[0]]);
+});
+
+test('workspace actions are available on files, folders and the empty tree background', t => {
+  const globals = [{ action: 'add-account', label: 'Add account' }, { action: 'reregion', label: 'ReRegion…' }];
+  const f = fixture(t, () => false, () => globals), input = files(); f.tree.render(input, '', 'save');
+  f.context(f.file(input[0].path));
+  assert.equal(f.menu.querySelectorAll('button').length, 6);
+  f.menu.querySelector('[data-action="add-account"]').click();
+  assert.deepEqual(f.actions[0], ['add-account', input[0]]);
+  f.context(f.folder('sdimg_sce_sdmemory'));
+  assert.deepEqual([...f.menu.querySelectorAll('button')].map(button => button.dataset.action), ['add-account', 'reregion']);
+  f.menu.querySelector('[data-action="reregion"]').click();
+  assert.deepEqual(f.actions[1], ['reregion', null]);
+  const scroll = f.container.closest('.workspace-files');
+  assert.equal(f.context(scroll), false, 'the workspace menu handles the context request');
+  assert.equal(f.menu.hidden, false);
+  f.menu.querySelector('[data-action="add-account"]').click();
+  assert.deepEqual(f.actions[2], ['add-account', null]);
+  f.tree.reset(); f.context(scroll);
+  assert.equal(f.menu.hidden, false);
+  assert.equal(f.menu.querySelectorAll('button').length, 2);
+});
+
+test('workspace action availability is rechecked on activation and labels remain text', t => {
+  let disabled = false, removed = false;
+  const f = fixture(t, () => false, () => removed ? [] : [{ action: 'reregion', label: '<img src=x>', disabled, title: 'Use the local worker.' }]);
+  f.tree.render(files(), '', 'save');
+  f.context(f.container.closest('.workspace-files'));
+  assert.equal(f.menu.querySelector('img'), null);
+  assert.equal(f.menu.querySelector('button').textContent, '<img src=x>');
+  assert.equal(f.menu.querySelector('button').title, 'Use the local worker.');
+  disabled = true; f.menu.querySelector('button').click();
+  assert.deepEqual(f.actions, []);
+  f.context(f.folder('sdimg_sce_sdmemory'));
+  assert.equal(f.menu.querySelector('button').disabled, true);
+  assert.equal(f.document.activeElement, f.menu);
+  f.key(f.menu, 'Escape'); assert.equal(f.menu.hidden, true);
+  assert.equal(f.document.activeElement, f.folder('sdimg_sce_sdmemory'));
+  disabled = false; f.context(f.container.closest('.workspace-files'));
+  removed = true; f.menu.querySelector('button').click();
+  assert.deepEqual(f.actions, []);
+});
+
+test('unhandled folder and background requests keep their normal context menu', t => {
+  const f = fixture(t); f.tree.render(files(), '', 'save');
+  assert.equal(f.context(f.folder('sdimg_sce_sdmemory')), true);
+  assert.equal(f.context(f.container.closest('.workspace-files')), true);
+  assert.equal(f.menu.hidden, true);
 });

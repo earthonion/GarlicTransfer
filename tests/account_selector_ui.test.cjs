@@ -68,6 +68,7 @@ test('adding the current ID preserves an existing target and prevents duplicates
   const f = fixture(t, { accounts: [{ id: TARGET, name: 'Target' }], selectedId: TARGET, useCurrent: false });
   await f.ui.ready;
   f.ui.setCurrentAccount(CURRENT.toUpperCase());
+  assert.equal(f.byId('addCurrentAccountBtn').hidden, false);
   f.byId('addCurrentAccountBtn').click();
   assert.equal(f.byId('accountNameDialog').open, true);
   assert.equal(f.window.document.activeElement, f.byId('accountNameInput'));
@@ -78,12 +79,63 @@ test('adding the current ID preserves an existing target and prevents duplicates
   assert.equal(f.ui.getSelectedId(), TARGET);
   assert.equal(f.ui.getTargetId(CURRENT), TARGET);
   assert.equal(f.byId('addCurrentAccountBtn').disabled, true);
+  assert.equal(f.byId('addCurrentAccountBtn').hidden, true);
   assert.equal(f.window.document.activeElement, f.byId('useCurrentAccountId'));
   f.byId('addCurrentAccountBtn').click();
   assert.equal(f.calls.filter(call => call[0] === 'add').length, 1);
   f.ui.setCurrentAccount('invalid');
   assert.equal(f.byId('workspaceAccountId').textContent, 'Not available');
   assert.equal(f.byId('addCurrentAccountBtn').disabled, true);
+  assert.equal(f.byId('addCurrentAccountBtn').hidden, true);
+});
+
+test('Add Account visibility follows unknown, saved and removed current accounts', async t => {
+  const f = fixture(t);
+  await f.ui.ready;
+  const add = f.byId('addCurrentAccountBtn');
+  assert.equal(add.hidden, true);
+  f.ui.setCurrentAccount(CURRENT);
+  assert.equal(add.hidden, false);
+  assert.equal(add.disabled, false);
+  f.ui.setBusy(true);
+  assert.equal(add.hidden, false, 'An unknown account remains visible while busy');
+  assert.equal(add.disabled, true);
+  f.ui.setBusy(false);
+  add.focus(); add.click();
+  await f.saveName('Current console');
+  assert.equal(add.hidden, true);
+  const name = f.byId('savedAccountRows').querySelector('input');
+  name.value = '';
+  name.dispatchEvent(new f.window.Event('change', { bubbles: true }));
+  await tick();
+  assert.equal(add.hidden, true, 'A saved ID remains known without a display name');
+  assert.equal(f.byId('workspaceAccountId').textContent, CURRENT);
+  assert.equal(f.window.document.activeElement, f.byId('useCurrentAccountId'));
+  f.byId('savedAccountRows').querySelector('[data-action="remove"]').click();
+  await tick();
+  assert.equal(add.hidden, false);
+  assert.equal(add.disabled, false);
+  f.ui.setCurrentAccount('');
+  assert.equal(add.hidden, true, 'Mixed or unavailable current IDs have nothing to add');
+});
+
+test('Add Account stays hidden until account loading succeeds', async t => {
+  let complete;
+  const f = fixture(t, {}, { getState: () => new Promise(resolve => { complete = resolve; }) });
+  f.ui.setCurrentAccount(CURRENT);
+  assert.equal(f.byId('addCurrentAccountBtn').hidden, true);
+  await tick();
+  complete({ accounts: [], selectedId: '', displayMode: 'name', useCurrent: true });
+  await f.ui.ready;
+  assert.equal(f.byId('addCurrentAccountBtn').hidden, false);
+  const failed = fixture(t, {}, { getState: async () => { throw new Error('Account loading failed'); } });
+  failed.ui.setCurrentAccount(CURRENT);
+  assert.equal(await failed.ui.ready, false);
+  assert.equal(failed.byId('addCurrentAccountBtn').hidden, true);
+  const missing = fixture(t, {}, { getState: undefined });
+  missing.ui.setCurrentAccount(CURRENT);
+  assert.equal(await missing.ui.ready, false);
+  assert.equal(missing.byId('addCurrentAccountBtn').hidden, true);
 });
 
 test('Settings names and display mode persist and names are rendered as text', async t => {

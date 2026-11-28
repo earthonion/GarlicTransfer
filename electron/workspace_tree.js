@@ -4,37 +4,54 @@
   else root.WorkspaceTree = api;
 })(typeof window === 'object' ? window : globalThis, function build() {
   // Function Workspace Tree
-  function create(document, container, { onOpen = () => {}, onAction = () => {}, isBusy = () => false } = {}) {
+  function create(document, container, {
+    onSelect = () => {}, onOpen = () => {}, onAction = () => {},
+    getWorkspaceActions = () => [], isBusy = () => false,
+  } = {}) {
     const window = document.defaultView;
     const uiText = window.GarlicI18n?.t || ((source, ...values) =>
       typeof source === 'string' ? source : String.raw({ raw: source }, ...values));
     const scroll = container.closest('.workspace-files') || container.parentElement;
     const rows = new Map(), expanded = new Set();
-    let nodes = [], workspace = null, focusKey = '', selected = '', busy = false, menuFile = null, menuRow = null;
+    const nameOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    let nodes = [], visibleNodes = [], workspace = null, focusKey = '', selected = '', busy = false, menuFile = null, menuRow = null;
     const blocked = () => busy || isBusy();
     container.setAttribute('role', 'rowgroup');
     container.closest('table')?.setAttribute('role', 'treegrid');
     container.closest('table')?.setAttribute('aria-label', uiText('Decrypted save files'));
     const menu = document.createElement('div');
     menu.id = 'workspaceFileContextMenu'; menu.className = 'save-context-menu workspace-file-menu';
-    menu.hidden = true; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', uiText('File actions'));
+    menu.hidden = true; menu.tabIndex = -1; menu.setAttribute('role', 'menu'); menu.setAttribute('aria-label', uiText('File actions'));
     const actions = [['edit', 'Edit file'], ['replace', 'Replace file…'], ['export', 'Export file'], ['delete', 'Delete file']];
-    for (const [action, label] of actions) {
+    const fileActions = new Set(actions.map(([action]) => action));
+
+    // Function Menu Items
+    function appendAction(action, label, disabled = false, title = '') {
       const button = document.createElement('button');
       button.type = 'button'; button.dataset.action = action; button.textContent = uiText(label);
       button.setAttribute('role', 'menuitem');
+      button.disabled = Boolean(disabled); button.title = title ? uiText(title) : '';
       if (action === 'delete') button.className = 'danger';
       menu.appendChild(button);
     }
     document.body.appendChild(menu);
 
-    const visible = () => nodes.filter(node => !node.row.hidden);
+    // Function = Find Tree Row
+    function eventNode(target) {
+      const row = target.closest('tr[data-node-key]');
+      const item = row && rows.get(row.dataset.nodeKey);
+      return item && item.row === row ? nodes[item.index] : null;
+    }
 
     // Function Tree Focus
     function focus(node) {
       if (!node) return;
-      focusKey = node.key;
-      for (const item of nodes) item.row.tabIndex = item === node ? 0 : -1;
+      if (focusKey !== node.key) {
+        const previous = rows.get(focusKey);
+        if (previous) previous.row.tabIndex = -1;
+        node.row.tabIndex = 0;
+        focusKey = node.key;
+      }
       node.row.focus({ preventScroll: true });
     }
 
@@ -45,32 +62,57 @@
       menuRow = null;
     }
 
+    // Function = Check File Action
+    function blockedReason(action, file) {
+      if (file.readOnly && action !== 'export') return 'chives.json is read-only.';
+      if (file.protected && action === 'delete') return 'Metadata and sce_sys files are protected from deletion.';
+      return '';
+    }
+
     // Function File Action
     function act(action, file) {
-      if (blocked() || !file || (action === 'delete' && file.protected)) return;
+      if (blocked()) return;
+      if (!fileActions.has(action)) {
+        const entry = getWorkspaceActions().find(item => item.action === action);
+        if (entry && !entry.disabled) return onAction(action, file || null);
+        return;
+      }
+      if (!file || blockedReason(action, file)) return;
       return action === 'edit' ? onOpen(file) : onAction(action, file);
     }
 
     // Function File Menu
     function showMenu(node, x, y) {
       closeMenu();
-      if (blocked() || node.folder) return;
-      focus(node); menuFile = node.file; menuRow = node.row;
-      for (const button of menu.querySelectorAll('button')) {
-        button.disabled = button.dataset.action === 'delete' && Boolean(node.file.protected);
-        button.title = button.disabled ? uiText('Metadata and sce_sys files are protected from deletion.') : '';
+      if (blocked()) return false;
+      const globals = getWorkspaceActions(), file = node && !node.folder ? node.file : null;
+      if (!file && !globals.length) return false;
+      menu.replaceChildren();
+      if (file) for (const [action, label] of actions) {
+        const reason = blockedReason(action, file);
+        appendAction(action, label, Boolean(reason), reason);
       }
+      for (const item of globals) appendAction(item.action, item.label, item.disabled, item.title);
+      if (node) focus(node);
+      menuFile = file; menuRow = node?.row || container.querySelector('tr[tabindex="0"]');
       menu.hidden = false;
-      const width = menu.offsetWidth || 208, height = menu.offsetHeight || 168;
+      const width = menu.offsetWidth || 208, height = menu.offsetHeight || Math.max(168, menu.children.length * 36 + 8);
       menu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - width - 8))}px`;
       menu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - height - 8))}px`;
-      menu.querySelector('button:not(:disabled)')?.focus();
+      (menu.querySelector('button:not(:disabled)') || menu).focus();
+      return true;
     }
 
     // Function Folder Visibility
     function refresh() {
+      visibleNodes = [];
       for (const node of nodes) {
         node.row.hidden = node.parents.some(path => !expanded.has(path));
+        node.visibleIndex = -1;
+        if (!node.row.hidden) {
+          node.visibleIndex = visibleNodes.length;
+          visibleNodes.push(node);
+        }
         if (node.folder) {
           node.row.setAttribute('aria-expanded', String(expanded.has(node.path)));
           node.icon.textContent = expanded.has(node.path) ? '▾' : '▸';
@@ -78,8 +120,8 @@
         node.row.classList.toggle('selected', !node.folder && node.path === selected);
         node.row.setAttribute('aria-disabled', String(blocked()));
       }
-      const items = visible();
-      const current = items.find(node => node.key === focusKey) || items.find(node => !node.folder && node.path === selected) || items[0];
+      const current = visibleNodes.find(node => node.key === focusKey)
+        || visibleNodes.find(node => !node.folder && node.path === selected) || visibleNodes[0];
       focusKey = current?.key || '';
       for (const node of nodes) node.row.tabIndex = node === current ? 0 : -1;
     }
@@ -126,7 +168,7 @@
       }
       const ordered = [];
       function visit(children) {
-        children.sort((a, b) => Number(b.folder) - Number(a.folder) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+        children.sort((a, b) => Number(b.folder) - Number(a.folder) || nameOrder.compare(a.name, b.name));
         for (const node of children) { ordered.push(node); if (node.folder) visit(node.children); }
       }
       visit(roots);
@@ -135,12 +177,13 @@
       for (const [index, node] of ordered.entries()) {
         let item = rows.get(node.key);
         if (!item) { item = makeRow(node); rows.set(node.key, item); }
+        item.index = index;
         Object.assign(node, item);
         node.row.classList.toggle('workspace-tree-folder', node.folder);
         node.row.classList.toggle('workspace-tree-file', !node.folder);
         node.row.setAttribute('aria-level', String(node.parents.length + 1));
         node.row.setAttribute('aria-label', node.folder ? uiText`${node.name}, folder` : uiText`${node.name}, ${node.file.size || 0} bytes`);
-        node.row.title = node.path;
+        node.row.title = node.file?.readOnly ? node.path + '\n' + uiText('chives.json is read-only.') : node.path;
         node.row.dataset[node.folder ? 'folderPath' : 'filePath'] = node.path;
         node.row.style.setProperty('--tree-depth', node.parents.length);
         node.label.textContent = node.name;
@@ -151,29 +194,50 @@
       nodes = ordered;
       if (activeKey) focusKey = activeKey;
       refresh();
-      if (activeKey) focus(visible().find(node => node.key === focusKey));
+      if (activeKey) focus(visibleNodes.find(node => node.key === focusKey));
       if (scroll) scroll.scrollTop = scrollTop;
     }
 
     // Function Tree Selection
+    function select(node) {
+      if (selected !== node.path) {
+        const previous = rows.get(`file:${selected}`);
+        if (previous) {
+          previous.row.classList.remove('selected');
+          previous.row.setAttribute('aria-selected', 'false');
+        }
+        selected = node.path;
+        node.row.classList.add('selected');
+        node.row.setAttribute('aria-selected', 'true');
+      }
+      onSelect(node.file);
+    }
     container.addEventListener('click', event => {
-      const row = event.target.closest('tr[data-node-key]');
-      const node = nodes.find(item => item.row === row);
+      const node = eventNode(event.target);
       if (!node || blocked()) return;
       focus(node);
       if (node.folder) { if (expanded.has(node.path)) expanded.delete(node.path); else expanded.add(node.path); refresh(); }
-      else act('edit', node.file);
+      else select(node);
     });
-    container.addEventListener('contextmenu', event => {
-      const node = nodes.find(item => item.row === event.target.closest('tr[data-node-key]'));
+    container.addEventListener('dblclick', event => {
+      const node = eventNode(event.target);
+      if (!node || node.folder || blocked()) return;
+      act('edit', node.file);
+    });
+    scroll.addEventListener('contextmenu', event => {
+      const node = eventNode(event.target);
+      if (showMenu(node, event.clientX, event.clientY)) { event.preventDefault(); event.stopPropagation(); }
+    });
+    scroll.addEventListener('keydown', event => {
+      const node = eventNode(event.target);
+      if (blocked()) return;
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        const rect = (node?.row || scroll).getBoundingClientRect();
+        if (showMenu(node, rect.left + 20, rect.bottom)) event.preventDefault();
+        return;
+      }
       if (!node) return;
-      event.preventDefault(); event.stopPropagation();
-      showMenu(node, event.clientX, event.clientY);
-    });
-    container.addEventListener('keydown', event => {
-      const node = nodes.find(item => item.row === event.target.closest('tr[data-node-key]'));
-      if (!node || blocked()) return;
-      const items = visible(), index = items.indexOf(node);
+      const items = visibleNodes, index = node.visibleIndex;
       let next;
       if (event.key === 'ArrowDown') next = items[index + 1];
       else if (event.key === 'ArrowUp') next = items[index - 1];
@@ -187,9 +251,8 @@
         else next = items.find(item => item.folder && item.path === node.parents[node.parents.length - 1]);
       } else if (event.key === 'Enter' || event.key === ' ') {
         if (node.folder) { if (expanded.has(node.path)) expanded.delete(node.path); else expanded.add(node.path); refresh(); }
+        else if (event.key === ' ') select(node);
         else act('edit', node.file);
-      } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
-        const rect = node.row.getBoundingClientRect(); showMenu(node, rect.left + 20, rect.bottom);
       } else return;
       event.preventDefault();
       if (next) { focus(next); next.row.scrollIntoView?.({ block: 'nearest' }); }
@@ -198,7 +261,7 @@
     // Function Menu Actions
     menu.addEventListener('click', event => {
       const button = event.target.closest('button[data-action]');
-      if (!button || button.disabled || !menuFile) return;
+      if (!button || button.disabled || menu.hidden) return;
       const file = menuFile; closeMenu(true); act(button.dataset.action, file);
     });
     menu.addEventListener('keydown', event => {
@@ -219,7 +282,7 @@
     return {
       render,
       setBusy(value) { busy = Boolean(value); if (busy) closeMenu(); refresh(); },
-      reset() { closeMenu(); container.replaceChildren(); rows.clear(); expanded.clear(); nodes = []; workspace = null; focusKey = ''; selected = ''; if (scroll) scroll.scrollTop = 0; },
+      reset() { closeMenu(); container.replaceChildren(); rows.clear(); expanded.clear(); nodes = []; visibleNodes = []; workspace = null; focusKey = ''; selected = ''; if (scroll) scroll.scrollTop = 0; },
     };
   }
   return { create };

@@ -12,7 +12,7 @@ const { authorizeDevice } = require('./device_auth.cjs');
 const i18n = require('./i18n.js');
 const { titleName } = require('./titles.cjs');
 const { pairingPrefixPath, existingPairingPrefix, pairingInfo, pairingInfos } = require('./pairing_store.cjs');
-const { registerSaveEditor } = require('./save_editor.cjs');
+const { registerSaveEditor, stopSaveJobs } = require('./save_editor.cjs');
 const { LocalPcStore } = require('./local_pc.cjs');
 const { AccountStore } = require('./account_store.cjs');
 const { registerAccountClose } = require('./account_close.cjs');
@@ -36,6 +36,17 @@ const localHelper = new LocalHelper({
   elfPath: localWorkerElf,
   onLog: message => send('log', { message }),
 });
+let closeServicesTask;
+
+// Function Local Shutdown
+function closeLocalServices() {
+  if (!closeServicesTask) closeServicesTask = (async () => {
+    stopActive();
+    await stopSaveJobs();
+    await localHelper.shutdown();
+  })();
+  return closeServicesTask;
+}
 
 function send(type, detail = {}) {
   if (type === 'entries' && Array.isArray(detail.entries)) {
@@ -44,7 +55,7 @@ function send(type, detail = {}) {
       entries: detail.entries.map((entry) => ({ ...entry, name: titleName(entry.title) })),
     };
   }
-  if (window && !window.isDestroyed()) {
+  if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) {
     window.webContents.send('transfer:event', { type, ...detail });
   }
 }
@@ -566,7 +577,9 @@ app.whenReady().then(() => {
       sandbox: true,
     },
   });
-  registerAccountClose({ app, window, ipcMain, dialog, onError: error => send('log', { message: `Account close: ${error.message}` }) });
+  registerAccountClose({ app, window, ipcMain, dialog,
+    beforeClose: closeLocalServices,
+    onError: error => send('log', { message: `Account close: ${error.message}` }) });
   return loadInterface(resolvedInterfaceLanguage(loadSettings().uiLanguage));
 });
 
@@ -812,6 +825,7 @@ ipcMain.handle('accounts:display-mode', (_event, mode) => accountStore.setDispla
 ipcMain.handle('accounts:use-current', (_event, value) => accountStore.setUseCurrent(value));
 
 registerSaveEditor({
+  titleName,
   ipcMain,
   app,
   dialog,

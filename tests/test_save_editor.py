@@ -11,7 +11,7 @@ from unittest.mock import patch
 import zipfile
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
-from poc.dt_save_editor import extract_archive, pack_workspace, pack_local_workspace, pack_local_inputs
+from poc.dt_save_editor import bundle_results, extract_archive, pack_workspace, pack_local_workspace, pack_local_inputs
 
 
 class SaveEditorZipTests(unittest.TestCase):
@@ -307,6 +307,152 @@ class LocalWorkerZipTests(unittest.TestCase):
                     archive = Path(data["archive"])
                     self.assertEqual(data["bytes"], archive.stat().st_size)
                     self.assert_stored_classic(archive)
+
+
+class BatchResultZipTests(unittest.TestCase):
+    def make_result(self, root, label, name=None, title="PPSA54321", content=b"GFP5encrypted"):
+        name = name or f"sdimg_{label}"
+        archive = root / f"{label}.zip"
+        with ZipFile(archive, "w") as output:
+            output.writestr(name, content)
+        return {"archive": str(archive), "titleId": title, "encryptedName": name}
+
+    def manifest(self, root, results):
+        manifest = root / "manifest.json"
+        manifest.write_text(json.dumps({"results": results}), encoding="utf-8")
+        return manifest
+
+    def test_five_save_results_keep_bytes_and_use_selected_title_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            results = [self.make_result(root, str(number), content=f"GFP5save{number}".encode())
+                       for number in range(5)]
+            originals = {result["archive"]: Path(result["archive"]).read_bytes() for result in results}
+            output = bundle_results(self.manifest(root, results), root / "combined.zip")
+            with ZipFile(output) as archive:
+                self.assertIsNone(archive.testzip())
+                self.assertEqual(archive.namelist(), [f"PPSA54321/sdimg_{number}" for number in range(5)])
+                for number in range(5):
+                    self.assertEqual(archive.read(f"PPSA54321/sdimg_{number}"), f"GFP5save{number}".encode())
+            for source, original in originals.items():
+                self.assertEqual(Path(source).read_bytes(), original)
+            self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_original_title_folders_allow_equal_save_names(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            results = [self.make_result(root, "one", "sdimg_save", "PPSA12345"),
+                       self.make_result(root, "two", "sdimg_save", "PPSA54321")]
+            output = bundle_results(self.manifest(root, results), root / "combined.zip")
+            with ZipFile(output) as archive:
+                self.assertEqual(archive.namelist(), ["PPSA12345/sdimg_save", "PPSA54321/sdimg_save"])
+
+    def test_duplicate_paths_are_case_insensitive_and_preserve_previous_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            results = [self.make_result(root, "one", "sdimg_save"),
+                       self.make_result(root, "two", "SDIMG_SAVE")]
+            output = root / "combined.zip"
+            output.write_bytes(b"previous export")
+            with self.assertRaisesRegex(ValueError, "duplicate batch result path"):
+                bundle_results(self.manifest(root, results), output)
+            self.assertEqual(output.read_bytes(), b"previous export")
+            self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_unsafe_manifest_names_titles_and_paths_are_rejected(self):
+        cases = [{"titleId": "PPSA12/34"}, {"titleId": "ppsa12345"},
+                 {"encryptedName": "../save"}, {"encryptedName": "folder\\save"},
+                 {"encryptedName": "save:"}, {"encryptedName": "."},
+                 {"encryptedName": "save."}, {"encryptedName": "save "},
+                 {"archive": "relative.zip"}, {"archive": None}]
+        for changes in cases:
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                result = self.make_result(root, "one")
+                result.update(changes)
+                output = root / "combined.zip"
+                with self.assertRaises(ValueError):
+                    bundle_results(self.manifest(root, [result]), output)
+                self.assertFalse(output.exists())
+
+    def test_empty_extra_nested_or_mismatched_zip_entries_are_rejected(self):
+        cases = [[], [("sdimg_one", b"")], [("other", b"data")],
+                 [("../sdimg_one", b"data")], [("folder/sdimg_one", b"data")],
+                 [("sdimg_one", b"data"), ("extra", b"data")], [("sdimg_one/", b"")]]
+        for members in cases:
+            with self.subTest(members=members), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                result = self.make_result(root, "one")
+                with ZipFile(result["archive"], "w") as archive:
+                    for name, data in members:
+                        archive.writestr(name, data)
+                output = root / "combined.zip"
+                output.write_bytes(b"previous export")
+                with self.assertRaises(ValueError):
+                    bundle_results(self.manifest(root, [result]), output)
+                self.assertEqual(output.read_bytes(), b"previous export")
+
+    def test_archive_links_and_special_entries_are_rejected(self):
+        for kind in [stat.S_IFLNK, stat.S_IFIFO]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                result = self.make_result(root, "one")
+                item = ZipInfo("sdimg_one")
+                item.create_system = 3
+                item.external_attr = (kind | 0o777) << 16
+                with ZipFile(result["archive"], "w") as archive:
+                    archive.writestr(item, b"data")
+                with self.assertRaisesRegex(ValueError, "links, directories or special"):
+                    bundle_results(self.manifest(root, [result]), root / "combined.zip")
+
+    @unittest.skipIf(os.name == "nt", "creating symlinks requires Windows privileges")
+    def test_linked_source_zip_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            result = self.make_result(root, "one")
+            linked = root / "linked.zip"
+            linked.symlink_to(Path(result["archive"]))
+            result["archive"] = str(linked)
+            with self.assertRaisesRegex(ValueError, "links or special"):
+                bundle_results(self.manifest(root, [result]), root / "combined.zip")
+
+    def test_corrupt_result_keeps_previous_export_and_removes_partial_zip(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            result = self.make_result(root, "one")
+            source = Path(result["archive"])
+            raw = bytearray(source.read_bytes())
+            raw[30 + len(result["encryptedName"])] ^= 1
+            source.write_bytes(raw)
+            output = root / "combined.zip"
+            output.write_bytes(b"previous export")
+            with self.assertRaises(zipfile.BadZipFile):
+                bundle_results(self.manifest(root, [result]), output)
+            self.assertEqual(output.read_bytes(), b"previous export")
+            self.assertEqual(list(root.glob("*.tmp")), [])
+
+    def test_output_cannot_replace_an_input_or_manifest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            result = self.make_result(root, "one")
+            source = Path(result["archive"])
+            original = source.read_bytes()
+            manifest = self.manifest(root, [result])
+            for output in [source, manifest]:
+                with self.subTest(output=output), self.assertRaisesRegex(ValueError, "separately"):
+                    bundle_results(manifest, output)
+            self.assertEqual(source.read_bytes(), original)
+
+    def test_cli_reports_archive_bytes_and_save_count(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            results = [self.make_result(root, "one"), self.make_result(root, "two")]
+            manifest = self.manifest(root, results)
+            output = root / "combined.zip"
+            process = subprocess.run([sys.executable, "-m", "poc.dt_save_editor", "bundle-results",
+                                      str(manifest), str(output)], check=True, capture_output=True, text=True)
+            self.assertEqual(json.loads(process.stdout),
+                             {"archive": str(output), "bytes": output.stat().st_size, "count": 2})
 
 
 if __name__ == "__main__":

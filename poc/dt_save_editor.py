@@ -3,6 +3,7 @@ import argparse
 from contextlib import ExitStack
 import json
 import os
+import re
 import stat
 import tempfile
 import threading
@@ -253,6 +254,85 @@ def pack_local_inputs(archive, inputs):
         return write_local_archive(entries, archive)
 
 
+# Function Batch Results
+def bundle_results(manifest, archive):
+    manifest = Path(manifest).expanduser()
+    archive = Path(archive).expanduser()
+    details = manifest.lstat()
+    if not stat.S_ISREG(details.st_mode):
+        raise ValueError("select a regular batch manifest without links")
+    with open_local_file(manifest, details.st_size) as source:
+        document = json.load(source)
+    results = document.get("results") if isinstance(document, dict) else None
+    if not isinstance(results, list) or not results:
+        raise ValueError("the batch manifest must contain save results")
+    if archive.resolve() == manifest.resolve():
+        raise ValueError("save the batch archive separately from its manifest")
+    entries = []
+    names = set()
+    with ExitStack() as stack:
+        for result in results:
+            if not isinstance(result, dict):
+                raise ValueError("invalid batch save result")
+            title_id = result.get("titleId")
+            name = result.get("encryptedName")
+            if not isinstance(title_id, str) or not re.fullmatch(r"PPSA[0-9]{5}", title_id):
+                raise ValueError("invalid batch result title ID")
+            if (not isinstance(name, str) or not name or name in (".", "..")
+                    or name.endswith((".", " "))
+                    or any(ord(character) < 32 or character in '/\\<>:"|?*' for character in name)):
+                raise ValueError("unsafe batch result name")
+            destination = f"{title_id}/{name}"
+            if destination.casefold() in names:
+                raise ValueError(f"duplicate batch result path: {destination}")
+            names.add(destination.casefold())
+            selected = result.get("archive")
+            if not isinstance(selected, str) or not Path(selected).is_absolute():
+                raise ValueError("batch result archives must use absolute paths")
+            selected = Path(selected)
+            if selected.resolve() == archive.resolve():
+                raise ValueError("save the batch archive separately from its input files")
+            details = selected.lstat()
+            if not stat.S_ISREG(details.st_mode):
+                raise ValueError("batch result links or special files are not supported")
+            stream = stack.enter_context(open_local_file(selected, details.st_size))
+            source = stack.enter_context(ZipFile(stream))
+            members = source.infolist()
+            if len(members) != 1:
+                raise ValueError(f"batch result must contain exactly one encrypted save: {selected.name}")
+            item = members[0]
+            kind = stat.S_IFMT(item.external_attr >> 16)
+            if kind not in (0, stat.S_IFREG) or item.is_dir() or item.external_attr & 0x10:
+                raise ValueError("batch result links, directories or special files are not supported")
+            if item.filename != name or item.file_size <= 0:
+                raise ValueError(f"batch result does not contain the expected encrypted save: {name}")
+            entries.append((destination, source, item))
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=archive.name + ".", suffix=".tmp", dir=archive.parent)
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            with ZipFile(temporary, "w", compression=ZIP_STORED, allowZip64=True) as output:
+                for destination, source, item in entries:
+                    info = ZipInfo(destination)
+                    info.compress_type = ZIP_STORED
+                    info.file_size = item.file_size
+                    info.external_attr = (stat.S_IFREG | 0o644) << 16
+                    with source.open(item) as input_stream, output.open(info, "w", force_zip64=True) as output_stream:
+                        copied = 0
+                        while chunk := input_stream.read(0x200000):
+                            copied += len(chunk)
+                            if copied > item.file_size:
+                                raise ValueError(f"batch result size changed: {item.filename}")
+                            output_stream.write(chunk)
+                        if copied != item.file_size:
+                            raise ValueError(f"batch result is truncated: {item.filename}")
+            os.replace(temporary, archive)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return archive
+
+
 def main():
     parser = argparse.ArgumentParser(description="Safely unpack and repack GarlicTransfer save workspaces")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -268,6 +348,9 @@ def main():
     local_inputs = subparsers.add_parser("local-inputs")
     local_inputs.add_argument("archive")
     local_inputs.add_argument("inputs", nargs="+")
+    bundle = subparsers.add_parser("bundle-results")
+    bundle.add_argument("manifest")
+    bundle.add_argument("archive")
     args = parser.parse_args()
     try:
         if args.command == "extract":
@@ -276,6 +359,11 @@ def main():
         elif args.command == "pack":
             result = pack_workspace(args.workspace, args.archive)
             output = {"archive": str(result), "bytes": result.stat().st_size}
+        elif args.command == "bundle-results":
+            result = bundle_results(args.manifest, args.archive)
+            with ZipFile(result) as bundled:
+                count = len(bundled.infolist())
+            output = {"archive": str(result), "bytes": result.stat().st_size, "count": count}
         else:
             result = (pack_local_workspace(args.workspace, args.archive)
                       if args.command == "local-pack" else pack_local_inputs(args.archive, args.inputs))

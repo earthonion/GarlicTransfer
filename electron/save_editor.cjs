@@ -9,13 +9,28 @@ const { pipeline } = require('node:stream/promises');
 const { isIP } = require('node:net');
 const { runLocalWorkerJob } = require('./local_worker.cjs');
 const { SaveTemps } = require('./save_temps.cjs');
-const { writeEditedFile, addWorkspaceFiles, prepareWorkspaceReplacement, replaceWorkspaceFile } = require('./workspace_io.cjs');
+const { readInlineFile, readWorkspacePage, applyWorkspacePages } = require('./editor_pages.cjs');
+const { planWorkspaceSaves, scanWorkspace, readSfoFile, readChivesFile } = require('./workspace_saves.cjs');
+const {
+  isReadOnlyFile, requireWritableFile, checkExportDestination,
+  writeEditedFile, addWorkspaceFiles, prepareWorkspaceReplacement, replaceWorkspaceFile,
+} = require('./workspace_io.cjs');
 const { randomUUID } = require('node:crypto');
 const { setTimeout: wait } = require('node:timers/promises');
 
 const MAX_EDITOR_BYTES = 8 * 1024 * 1024;
-const PROTECTED_FILES = new Set(['PS5IMAGE', 'PS5KEY', 'PS5PARAM', 'PS5PARAM_SIZE', 'chives.json']);
+const PROTECTED_FILES = new Set(['PS5IMAGE', 'PS5KEY', 'PS5PARAM', 'PS5PARAM_SIZE']);
 let activeJob = null;
+let jobsClosing = false;
+
+// Function Save Shutdown
+async function stopSaveJobs() {
+  jobsClosing = true;
+  const job = activeJob;
+  if (!job) return;
+  job.controller.abort();
+  await job.done;
+}
 
 // Function Save Cancellation
 function cancellationError() {
@@ -86,90 +101,86 @@ function protectedFile(relative) {
   return PROTECTED_FILES.has(path.basename(normalized)) || normalized.split('/').includes('sce_sys');
 }
 
-// Function Account Reading
-async function accountIdFromSfo(root, candidates = null) {
-  if (candidates === null) {
-    candidates = [];
-    async function visit(directory) {
-      for (const entry of await fsPromises.readdir(directory, { withFileTypes: true })) {
-        const current = path.join(directory, entry.name);
-        if (entry.isDirectory()) await visit(current);
-        else if (entry.isFile() && entry.name.toLowerCase() === 'param.sfo') candidates.push(current);
-      }
-    }
-    await visit(root);
-  }
+// Function = Read Account
+async function accountIdFromSfo(root, candidates = null, cache = new Map()) {
+  if (candidates === null) candidates = (await scanWorkspace(root, undefined, fsPromises)).sfoCandidates;
   for (const candidate of candidates) {
-    const data = await fsPromises.readFile(candidate);
-    for (const offset of [0x1b8, 0x15c]) {
-      if (data.length < offset + 8) continue;
-      const value = data.subarray(offset, offset + 8);
-      if (value.some((byte) => byte !== 0)) return Buffer.from(value).toString('hex');
+    try { return (await readSfoFile(candidate, cache)).accountId; }
+    catch (error) {
+      if (error.code && !['ENOENT', 'ELOOP'].includes(error.code)) throw error;
     }
   }
   return '';
 }
 
-// Function Workspace Scan
-async function workspaceInfo(root, ignoredPaths = new Set()) {
-  const base = path.resolve(root);
-  const files = [];
-  const sfoCandidates = [];
-  async function visit(directory) {
-    for (const entry of await fsPromises.readdir(directory, { withFileTypes: true })) {
-      const current = path.join(directory, entry.name);
-      if (ignoredPaths.has(current)) continue;
-      if (entry.isDirectory()) {
-        await visit(current);
-      } else if (entry.isFile()) {
-        if (entry.name.toLowerCase() === 'param.sfo') sfoCandidates.push(current);
-        const stat = await fsPromises.stat(current);
-        const relative = path.relative(base, current);
-        files.push({
-          path: relative.split(path.sep).join('/'),
-          size: stat.size,
-          protected: protectedFile(relative),
-        });
-      }
+// Function = Check Metadata
+async function workspaceMetadata(scan, allowBatch = true) {
+  let titleId = '', batchError = '', saves = [];
+  const files = scan.files.filter(file => isReadOnlyFile(file.filename))
+    .sort((left, right) => left.filename.localeCompare(right.filename));
+  for (const { filename } of files) {
+    try {
+      const metadata = await readChivesFile(scan, filename);
+      if (!titleId && typeof metadata.title_id === 'string') titleId = metadata.title_id;
+    } catch (error) {
+      const relative = path.relative(scan.root, filename).split(path.sep).join('/');
+      batchError ||= `Invalid metadata in ${relative}: ${error.message}`;
     }
   }
-  await visit(base);
-  files.sort((left, right) => left.path.localeCompare(right.path));
-  let titleId = '';
-  const chivesEntry = files.find((file) => file.path === 'chives.json' || file.path.endsWith('/chives.json'));
-  if (chivesEntry) {
-    const chives = JSON.parse(await fsPromises.readFile(path.join(base, chivesEntry.path), 'utf8'));
-    titleId = chives.title_id || '';
+  if (!batchError && allowBatch && scan.sfoCandidates.length > 1) {
+    try { saves = await planWorkspaceSaves(scan.root, scan); }
+    catch (error) { batchError = error.message; }
   }
+  return { saves, titleId: titleId || saves[0]?.titleId || '', batchError };
+}
+
+// Function = Scan Workspace
+async function workspaceInfo(root, ignoredPaths = new Set(), titleName) {
+  const base = path.resolve(root);
+  const scan = await scanWorkspace(base, ignoredPaths, fsPromises);
+  const files = scan.files.map(({ filename, size }) => {
+    const relative = path.relative(base, filename);
+    const readOnly = isReadOnlyFile(relative);
+    return { path: relative.split(path.sep).join('/'), size, protected: readOnly || protectedFile(relative), readOnly };
+  }).sort((left, right) => left.path.localeCompare(right.path));
+  const { saves, titleId, batchError } = await workspaceMetadata(scan);
+  const gameName = id => (typeof titleName === 'function' && titleName(id)) || 'Unknown title';
   return {
     root: base,
     files,
-    accountId: await accountIdFromSfo(base, sfoCandidates),
+    accountId: await accountIdFromSfo(base, scan.sfoCandidates, scan.sfoInfo),
     titleId,
+    gameName: gameName(titleId),
+    saves: saves.map(save => ({ ...save, gameName: gameName(save.titleId) })),
+    batchError,
     totalBytes: files.reduce((total, file) => total + file.size, 0),
   };
 }
 
 async function readWorkspaceFile(root, relative) {
   const selected = resolveInside(root, relative);
-  const stat = await fsPromises.stat(selected);
-  if (!stat.isFile()) throw new Error('select a file in the save workspace');
-  if (stat.size > MAX_EDITOR_BYTES) {
-    throw new Error('this file is larger than 8 MiB; download it to edit with another application');
-  }
-  const data = await fsPromises.readFile(selected);
-  return { path: relative.split(path.sep).join('/'), size: stat.size, data: data.toString('base64') };
+  const result = await readInlineFile(selected, MAX_EDITOR_BYTES);
+  return { path: relative.split(path.sep).join('/'), ...result };
 }
 
-async function writeWorkspaceFile(root, relative, encoded) {
+async function writeWorkspaceFile(root, relative, encoded, titleName) {
   const selected = resolveInside(root, relative);
-  if (typeof encoded !== 'string' || encoded.length > Math.ceil(MAX_EDITOR_BYTES / 3) * 4 + 4) {
-    throw new Error('the edited file is larger than 8 MiB');
-  }
+  if (typeof encoded !== 'string') throw new Error('the edited file is not valid base64 data');
   const data = Buffer.from(encoded, 'base64');
   if (data.toString('base64') !== encoded) throw new Error('the edited file is not valid base64 data');
   await writeEditedFile(selected, data);
-  return workspaceInfo(root);
+  return workspaceInfo(root, undefined, titleName);
+}
+
+// Function = Save Pages
+async function writeWorkspacePages(options, titleName) {
+  const editorVersion = await applyWorkspacePages(options);
+  try {
+    const workspace = await workspaceInfo(options.root, undefined, titleName);
+    return { ...workspace, editorVersion };
+  } catch (error) {
+    throw new Error(`The file was saved, but the workspace could not refresh. Reopen the workspace. ${error.message}`, { cause: error });
+  }
 }
 
 async function runZip(python, resourceRoot, cwd, command, ...files) {
@@ -345,6 +356,108 @@ async function downloadRemoteResult({ serverUrl, workerKey, jobId, jobToken = ''
   }
 }
 
+// Function Output Location
+async function batchOutputPath(output, workspace, createParent = false) {
+  const destination = path.resolve(output);
+  const parentDirectory = path.dirname(destination);
+  const base = await fsPromises.realpath(workspace);
+  const requireOutside = selected => {
+    const relative = path.relative(base, selected);
+    if (relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))) {
+      throw new Error('Choose a batch output outside the decrypted workspace.');
+    }
+    return selected;
+  };
+  requireOutside(destination);
+  let ancestor = parentDirectory;
+  while (true) {
+    try {
+      requireOutside(await fsPromises.realpath(ancestor));
+      break;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) throw error;
+      ancestor = parent;
+    }
+  }
+  if (!createParent) return destination;
+  await fsPromises.mkdir(parentDirectory, { recursive: true });
+  const parent = requireOutside(await fsPromises.realpath(parentDirectory));
+  return path.join(parent, path.basename(destination));
+}
+
+// Function = Publish Batch
+async function publishSaveBundle(options, manifest) {
+  const { output, workspace, signal, python, resourceRoot, workDir } = options;
+  const destination = await batchOutputPath(output, workspace, true);
+  checkCanceled(signal);
+  const staging = await fsPromises.mkdtemp(path.join(path.dirname(destination), '.garlic-batch-'));
+  try {
+    const staged = path.join(staging, 'result.zip');
+    await runZip(python, resourceRoot, workDir, 'bundle-results', manifest, staged, { signal });
+    checkCanceled(signal);
+    await fsPromises.rename(staged, destination);
+  } finally {
+    await fsPromises.rm(staging, { recursive: true, force: true });
+  }
+}
+
+// Function Batch Encryption
+async function runBatchSaveJob(options, saves, temporary, temps, emit) {
+  const { signal, accountId, targetTitleId = '', output, workspace } = options;
+  const destination = await batchOutputPath(output, workspace);
+  const results = [];
+  const jobIds = [];
+  const names = new Set();
+  for (const save of saves) {
+    const titleId = targetTitleId || save.titleId;
+    const name = `${titleId}/${save.encryptedName}`.toLowerCase();
+    if (names.has(name)) throw new Error(`Batch results would duplicate ${titleId}/${save.encryptedName}. Rename the save folders or process them separately.`);
+    names.add(name);
+    if (!/^[0-9a-fA-F]{16}$/.test(options.useCurrentAccount === true ? save.accountId : accountId)) {
+      throw new Error(`Could not read the Account ID for ${save.label}. Choose a target account or repair its param.sfo.`);
+    }
+  }
+  for (const [index, save] of saves.entries()) {
+    checkCanceled(signal);
+    const prefix = `Save ${index + 1} of ${saves.length}: ${save.label}`;
+    emit('status', { message: `Encrypting ${prefix}` });
+    const sender = options.sender ? {
+      isDestroyed: () => options.sender.isDestroyed(),
+      send(channel, event) {
+        if (channel === 'save-editor:event' && event.type === 'error') return;
+        if (channel === 'save-editor:event' && ['status', 'log'].includes(event.type)) {
+          options.sender.send(channel, { ...event, message: `${prefix} — ${event.message}` });
+        } else options.sender.send(channel, event);
+      },
+    } : undefined;
+    const archive = path.join(temporary.directory, `result-${index + 1}.zip`);
+    let result;
+    try {
+      result = await runSaveJob({
+        ...options, sender, temporaryStore: temps,
+        workspace: save.root, output: archive,
+        batchSaveName: save.encryptedName,
+        accountId: options.useCurrentAccount === true ? save.accountId : accountId,
+        useCurrentAccount: false,
+      });
+    } catch (error) {
+      if (signal?.aborted || error.name === 'AbortError') throw error;
+      throw Object.assign(new Error(`${prefix} — ${error.message}`, { cause: error }), { name: error.name, code: error.code });
+    }
+    jobIds.push(result.jobId);
+    results.push({ archive, titleId: targetTitleId || save.titleId, encryptedName: save.encryptedName });
+  }
+  checkCanceled(signal);
+  emit('status', { message: `Collecting ${saves.length} encrypted saves…` });
+  const manifest = path.join(temporary.directory, 'results.json');
+  await fsPromises.writeFile(manifest, JSON.stringify({ results }));
+  await publishSaveBundle(options, manifest);
+  emit('status', { message: `${saves.length} encrypted saves are ready.` });
+  return { operation: 'encrypt', jobIds, output: destination, saveCount: saves.length };
+}
+
 async function runSaveJob(options) {
   const {
     sender, serverUrl, workerKey, operation, accountId = '', inputs = [], workspace,
@@ -355,6 +468,18 @@ async function runSaveJob(options) {
   checkCanceled(signal);
   if (!['decrypt', 'encrypt', 'resign'].includes(operation)) throw new Error('unsupported save operation');
   const local = useRemoteOracle === false;
+  // Function Target Title
+  if (options.targetTitleId !== undefined && typeof options.targetTitleId !== 'string') {
+    throw new Error('Enter the target PPSA as PPSA followed by five digits.');
+  }
+  const targetTitleId = (options.targetTitleId || '').trim().toUpperCase();
+  if (targetTitleId) {
+    if (!/^PPSA\d{5}$/.test(targetTitleId)) throw new Error('Enter the target PPSA as PPSA followed by five digits.');
+    if (!local) throw new Error('Changing the PPSA requires the local PS5 worker.');
+    if (platform !== 'ps5' || !['encrypt', 'resign'].includes(operation)) {
+      throw new Error('Changing the PPSA is available when encrypting or resigning a PS5 save.');
+    }
+  }
   const localHost = String(oracleHost || '').trim();
   if (local) {
     if (!isIP(localHost)) throw new Error('enter a valid local oracle IP in Settings');
@@ -364,12 +489,14 @@ async function runSaveJob(options) {
     if (sender && !sender.isDestroyed()) sender.send('device:event', { type: 'required' });
     throw new Error('Authorize the app first!');
   }
-  if ((operation === 'encrypt' || operation === 'resign') && !/^[0-9a-fA-F]{16}$/.test(accountId)) {
+  const currentBatchAccount = local && platform === 'ps5' && operation === 'encrypt' && options.useCurrentAccount === true;
+  if ((operation === 'encrypt' || operation === 'resign') && !currentBatchAccount && !/^[0-9a-fA-F]{16}$/.test(accountId)) {
     throw new Error('enter a 16-digit hexadecimal account ID');
   }
   if (operation !== 'encrypt' && !inputs.length) throw new Error('choose at least one encrypted save file');
   if (operation === 'encrypt' && !workspace) throw new Error('open a decrypted workspace first');
   if (operation !== 'decrypt' && !output) throw new Error('choose where to save the encrypted result');
+  if (operation !== 'decrypt') requireWritableFile(output);
   const emit = (type, detail) => {
     if (sender && !sender.isDestroyed()) sender.send('save-editor:event', { type, ...detail });
   };
@@ -382,6 +509,19 @@ async function runSaveJob(options) {
     temporary = await temps.create();
     const uploadRoot = temporary.directory;
     const resultPath = operation === 'decrypt' ? path.join(uploadRoot, 'decrypted.zip') : path.resolve(output);
+    if (operation === 'encrypt') {
+      const scan = await scanWorkspace(workspace, undefined, fsPromises);
+      if (scan.error) throw scan.error;
+      const { saves, batchError } = await workspaceMetadata(scan, platform === 'ps5');
+      if (batchError) throw new Error(batchError);
+      checkCanceled(signal);
+      if (saves.length > 1) {
+        if (!local) throw new Error('Encrypting multiple saves requires the local PS5 worker.');
+        if (options.singleSaveOnly) throw new Error('Export multiple saves as a new ZIP.');
+        return await runBatchSaveJob({ ...options, targetTitleId }, saves, temporary, temps, emit);
+      }
+      if (!/^[0-9a-fA-F]{16}$/.test(accountId)) throw new Error('enter a 16-digit hexadecimal account ID');
+    }
     let jobId;
     if (local) {
       // Function Local Save Job
@@ -397,6 +537,8 @@ async function runSaveJob(options) {
       await waitForSave(ensureLocalWorker(localHost), signal);
       checkCanceled(signal);
       const params = operation === 'decrypt' ? { include_sce_sys: true } : { account_id: accountId };
+      if (options.batchSaveName) params.savename = options.batchSaveName;
+      if (targetTitleId) params.target_title_id = targetTitleId;
       const completed = await runLocalWorkerJob({
         host: localHost, operation, params, inputArchive, resultPath, timeoutMs, signal,
         onLog: (message) => emit('log', { message }),
@@ -453,7 +595,7 @@ async function runSaveJob(options) {
       const workspaceRoot = path.join(uploadRoot, 'workspace');
       await runZip(python, resourceRoot, workDir, 'extract', resultPath, workspaceRoot, { signal });
       emit('status', { message: 'Decrypted save is ready to edit.' });
-      const info = await workspaceInfo(workspaceRoot);
+      const info = await workspaceInfo(workspaceRoot, undefined, options.titleName);
       checkCanceled(signal);
       await fsPromises.rm(path.join(uploadRoot, 'local-input.zip'), { force: true });
       keepWorkspace = true;
@@ -472,7 +614,7 @@ async function runSaveJob(options) {
 }
 
 // Register save-editor actions.
-function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot, workDir, pcStore, ensureLocalWorker }) {
+function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot, workDir, pcStore, ensureLocalWorker, titleName }) {
   const userDataRoot = app.getPath('userData');
   const temporaryStore = new SaveTemps(path.join(userDataRoot, 'save-editor'));
 
@@ -497,7 +639,7 @@ function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot,
   });
   ipcMain.handle('save-editor:choose-workspace', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] });
-    return result.canceled ? null : workspaceInfo(result.filePaths[0]);
+    return result.canceled ? null : workspaceInfo(result.filePaths[0], undefined, titleName);
   });
   ipcMain.handle('save-editor:choose-output', async (_event, defaultPath) => {
     const result = await dialog.showSaveDialog({ defaultPath });
@@ -513,13 +655,15 @@ function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot,
     if (fs.existsSync(`${selected}.bin`)) paths.push(`${selected}.bin`);
     return paths;
   });
-  ipcMain.handle('save-editor:info', (event, root) => useWorkspace(event, root, () => workspaceInfo(root)));
+  ipcMain.handle('save-editor:info', (event, root) => useWorkspace(event, root, () => workspaceInfo(root, undefined, titleName)));
   ipcMain.handle('save-editor:read', (event, { root, path: relative }) => useWorkspace(event, root, () => readWorkspaceFile(root, relative)));
-  ipcMain.handle('save-editor:write', (event, { root, path: relative, data }) => useWorkspace(event, root, () => writeWorkspaceFile(root, relative, data)));
+  ipcMain.handle('save-editor:write', (event, { root, path: relative, data }) => useWorkspace(event, root, () => writeWorkspaceFile(root, relative, data, titleName)));
+  ipcMain.handle('save-editor:read-page', (event, options) => useWorkspace(event, options.root, () => readWorkspacePage(options)));
+  ipcMain.handle('save-editor:write-pages', (event, options) => useWorkspace(event, options.root, () => writeWorkspacePages(options, titleName)));
   ipcMain.handle('save-editor:add', (event, { root }) => useWorkspace(event, root, async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile', 'multiSelections'] });
     if (result.canceled) return null;
-    return addWorkspaceFiles(root, result.filePaths, () => workspaceInfo(root));
+    return addWorkspaceFiles(root, result.filePaths, () => workspaceInfo(root, undefined, titleName));
   }));
   // Function File Replacement
   ipcMain.handle('save-editor:replace', (event, { root, path: relative }) => useWorkspace(event, root, async () => {
@@ -530,22 +674,26 @@ function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot,
     });
     if (result.canceled) return null;
     if (!Array.isArray(result.filePaths) || result.filePaths.length !== 1) throw new Error('choose one replacement file');
-    return replaceWorkspaceFile(target, result.filePaths[0], ignored => workspaceInfo(target.root, ignored));
+    return replaceWorkspaceFile(target, result.filePaths[0], ignored => workspaceInfo(target.root, ignored, titleName));
   }));
   ipcMain.handle('save-editor:delete', (event, { root, path: relative }) => useWorkspace(event, root, async () => {
-    if (protectedFile(relative)) throw new Error('metadata required to rebuild the save cannot be deleted');
-    await fsPromises.unlink(resolveInside(root, relative));
-    return workspaceInfo(root);
+    const selected = resolveInside(root, relative);
+    requireWritableFile(selected);
+    if (protectedFile(path.relative(root, selected))) throw new Error('metadata required to rebuild the save cannot be deleted');
+    await fsPromises.unlink(selected);
+    return workspaceInfo(root, undefined, titleName);
   }));
   ipcMain.handle('save-editor:download-file', (event, { root, path: relative }) => useWorkspace(event, root, async () => {
     const result = await dialog.showSaveDialog({ defaultPath: path.basename(relative) });
     if (result.canceled) return null;
+    await checkExportDestination(result.filePath, root);
     await fsPromises.copyFile(resolveInside(root, relative), result.filePath);
     return result.filePath;
   }));
   ipcMain.handle('save-editor:download-archive', (event, { archivePath }) => useWorkspace(event, archivePath, async () => {
     const result = await dialog.showSaveDialog({ defaultPath: path.basename(archivePath) });
     if (result.canceled) return null;
+    await checkExportDestination(result.filePath);
     await fsPromises.copyFile(archivePath, result.filePath);
     return result.filePath;
   }));
@@ -564,6 +712,7 @@ function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot,
   });
   // Function Save Operation
   async function saveOperation(event, action) {
+    if (jobsClosing) throw new Error('GarlicTransfer is closing.');
     if (activeJob) throw new Error('another save operation is already running');
     const controller = new AbortController();
     let completed;
@@ -594,9 +743,9 @@ function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot,
       replacement = await temporaryStore.create('replacement-');
       const output = path.join(replacement.directory, 'encrypted.zip');
       const result = await runSaveJob({
-        ...options, operation: 'encrypt', output,
+        ...options, operation: 'encrypt', output, singleSaveOnly: true,
         sender: event.sender, python, resourceRoot, workDir, userDataRoot,
-        ensureLocalWorker, temporaryStore, signal,
+        ensureLocalWorker, temporaryStore, signal, titleName,
       });
       const imageRoot = path.join(replacement.directory, 'image');
       await runZip(python, resourceRoot, workDir, 'extract', output, imageRoot, { signal });
@@ -619,6 +768,7 @@ function registerSaveEditor({ ipcMain, app, dialog, shell, python, resourceRoot,
     ensureLocalWorker,
     temporaryStore,
     signal,
+    titleName,
   })));
 }
 
@@ -628,10 +778,13 @@ module.exports = {
   createRemoteJob,
   downloadRemoteResult,
   readWorkspaceFile,
+  readWorkspacePage,
   registerSaveEditor,
+  stopSaveJobs,
   resolveInside,
   runSaveJob,
   runZip,
   workspaceInfo,
   writeWorkspaceFile,
+  writeWorkspacePages,
 };

@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { TextDecoder } = require('node:util');
 
 const { SAVE_PORT, MAX_MESSAGE_BYTES, MAX_JOB_BYTES, MAX_ARCHIVE_BYTES, CHUNK_BYTES,
-  isWorkerGreeting } = require('./local_protocol.cjs');
+  CONTROL_PORT, CONTROL_PROTOCOL, isWorkerGreeting } = require('./local_protocol.cjs');
 
 // Function Worker Reading
 class WorkerReader {
@@ -123,6 +123,11 @@ async function runLocalWorkerJob({
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid local PS5 helper port');
   if (!['decrypt', 'encrypt', 'resign'].includes(operation)) throw new Error('Unsupported local save operation');
   if (!params || Array.isArray(params) || typeof params !== 'object') throw new Error('Invalid local save parameters');
+  const targetTitleId = params.target_title_id;
+  if (targetTitleId !== undefined && (typeof targetTitleId !== 'string' || !/^PPSA\d{5}$/.test(targetTitleId)
+      || !['encrypt', 'resign'].includes(operation))) {
+    throw new Error('Invalid target PPSA for the local save operation');
+  }
   if (typeof inputArchive !== 'string' || !inputArchive || typeof resultPath !== 'string' || !resultPath) {
     throw new Error('Choose the local job input and result paths');
   }
@@ -163,6 +168,9 @@ async function runLocalWorkerJob({
     const hello = await reader.message();
     if (!isWorkerGreeting(hello)) {
       throw new Error('The PS5 is not running the compatible Garlic local save helper');
+    }
+    if (targetTitleId && (!Array.isArray(hello.capabilities) || !hello.capabilities.includes('target_title_id'))) {
+      throw new Error('Restart the local PS5 helper with the updated GarlicWorker.elf payload to change the PPSA.');
     }
     clearTimeout(connectTimer);
     await sendMessage(socket, { type: 'job', id: jobId, operation, params });
@@ -224,4 +232,34 @@ async function runLocalWorkerJob({
   }
 }
 
-module.exports = { runLocalWorkerJob };
+// Function Worker Shutdown
+async function shutdownLocalWorker({ host, port = CONTROL_PORT, instanceId, timeoutMs = 5000 }) {
+  if (typeof host !== 'string' || !host.trim() || !/^[0-9a-f]{32}$/.test(instanceId || '')
+      || !Number.isInteger(port) || port < 1 || port > 65535
+      || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0x7fffffff) {
+    throw new Error('Invalid local helper shutdown settings');
+  }
+  const socket = new net.Socket();
+  socket.on('error', () => {});
+  const timer = setTimeout(() => socket.destroy(new Error('Timed out requesting local PS5 helper shutdown')), timeoutMs);
+  try {
+    await connectWorker(socket, host.trim(), port);
+    const reader = new WorkerReader(socket);
+    const hello = await reader.message();
+    if (hello.type !== 'hello' || hello.protocol !== CONTROL_PROTOCOL || hello.platform !== 'ps5'
+        || hello.instance_id !== instanceId) {
+      throw new Error('The local PS5 helper changed; its process was left running');
+    }
+    await sendMessage(socket, { type: 'shutdown', instance_id: instanceId });
+    const reply = await reader.message();
+    if (reply.type !== 'shutdown_accepted' || reply.instance_id !== instanceId) {
+      throw new Error('The local PS5 helper did not confirm shutdown');
+    }
+    return { accepted: true };
+  } finally {
+    clearTimeout(timer);
+    socket.destroy();
+  }
+}
+
+module.exports = { runLocalWorkerJob, shutdownLocalWorker };

@@ -143,6 +143,17 @@ async function selectFirstFile(context) {
   await until(() => !context.document.getElementById('selectedSavePanel').hidden, 'PC save was not selected');
 }
 
+// Function Test Editor
+async function openTextEditorFile(context) {
+  const row = context.document.querySelector('#workspaceFiles tr[data-file-path]');
+  assert.ok(row, 'No decrypted workspace file was rendered');
+  row.dispatchEvent(new context.window.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+  await until(() => !context.document.getElementById('fileEditorPanel').hidden, 'Workspace file editor did not open');
+  const mode = context.document.getElementById('editorMode');
+  mode.value = 'text';
+  mode.dispatchEvent(new context.window.Event('change'));
+}
+
 test('Local PC remains available without a prepared transfer profile and browses an unassigned save', async () => {
   const context = await app({ profiles: false, active: false, folder: '' });
   const { dom, document, pc, window, errors } = context;
@@ -353,7 +364,12 @@ test('PC decrypt and save-encrypt keep their source context and preserve the wor
     assert.equal(pc.calls.files[0].entryId, firstId);
     assert.equal(pc.calls.jobs[0].operation, 'decrypt');
     document.querySelector('#workspaceFiles tr[data-file-path]').click();
+    await pause();
+    assert.equal(document.getElementById('fileEditorPanel').hidden, true, 'Selecting a file should not open its editor');
+    assert.equal(document.getElementById('fileEditorDialog').open, false);
+    await openTextEditorFile(context);
     await until(() => !document.getElementById('fileEditorPanel').hidden, 'Workspace file did not open');
+    assert.equal(document.getElementById('fileEditorDialog').open, true);
     const editor = document.getElementById('fileEditor');
     editor.value = 'edited PC save'; editor.dispatchEvent(new window.Event('input'));
     document.querySelector('[data-page="library"]').click();
@@ -383,7 +399,7 @@ test('switching PC saves requires closing the previous decrypted workspace befor
     await until(() => pc.calls.jobs.some((job) => job.operation === 'decrypt')
       && document.querySelector('.wizard-panel[data-wizard="2"]').classList.contains('active'), 'First PC save did not decrypt');
     await idle(context);
-    document.querySelector('#workspaceFiles tr[data-file-path]').click();
+    await openTextEditorFile(context);
     await until(() => !document.getElementById('fileEditorPanel').hidden, 'First PC editor file did not open');
     await idle(context);
     const editor = document.getElementById('fileEditor');
@@ -408,6 +424,7 @@ test('switching PC saves requires closing the previous decrypted workspace befor
     assert.equal(prompts.length, 2);
     assert.equal(document.getElementById('selectedSaveName').textContent, 'PC Racing');
     assert.equal(document.getElementById('workspacePanel').hidden, true);
+    assert.equal(document.getElementById('fileEditorDialog').open, false, 'Switching source saves should close the old file editor');
     assert.equal(document.querySelector('.wizard-panel[data-wizard="2"]').classList.contains('active'), false);
     document.getElementById('encryptSaveBtn').click();
     await idle(context);
@@ -555,7 +572,7 @@ test('owned workspace cleanup follows confirmed closure and preserves canceled e
   try {
     await openLibrary(context); await selectFirstFile(context);
     document.getElementById('mySaveDecryptBtn').click(); await idle(context);
-    document.querySelector('#workspaceFiles tr[data-file-path]').click();
+    await openTextEditorFile(context);
     await until(() => !document.getElementById('fileEditorPanel').hidden, 'Editor did not open');
     const editor = document.getElementById('fileEditor');
     editor.value = 'unsaved changes'; editor.dispatchEvent(new window.Event('input'));
@@ -570,6 +587,7 @@ test('owned workspace cleanup follows confirmed closure and preserves canceled e
     window.confirm = () => true;
     document.getElementById('closeWorkspaceBtn').click();
     await until(() => pc.calls.temporaryRelease.length === 1, 'Owned workspace was not released');
+    assert.equal(document.getElementById('fileEditorDialog').open, false, 'Closing the workspace should close its file editor');
     assert.deepEqual(pc.calls.temporaryRelease, ['workspace-1']);
     document.getElementById('closeWorkspaceBtn').click(); await pause();
     assert.deepEqual(pc.calls.temporaryRelease, ['workspace-1']);
@@ -602,7 +620,7 @@ test('saved workspace edits still require discard confirmation before owned clea
   try {
     await openLibrary(context); await selectFirstFile(context);
     document.getElementById('mySaveDecryptBtn').click(); await idle(context);
-    document.querySelector('#workspaceFiles tr[data-file-path]').click();
+    await openTextEditorFile(context);
     await until(() => !document.getElementById('fileEditorPanel').hidden, 'Editor did not open');
     const editor = document.getElementById('fileEditor');
     editor.value = 'saved but not encrypted'; editor.dispatchEvent(new window.Event('input'));
@@ -980,7 +998,7 @@ test('a failed native confirmation reports its error and preserves edits until a
   try {
     await openLibrary(context); await selectFirstFile(context);
     document.getElementById('mySaveDecryptBtn').click(); await idle(context);
-    document.querySelector('#workspaceFiles tr[data-file-path]').click(); await idle(context);
+    await openTextEditorFile(context); await idle(context);
     const editor = document.getElementById('fileEditor');
     editor.value = 'preserve these edits'; editor.dispatchEvent(new window.Event('input'));
     let prompts = 0;
@@ -1008,7 +1026,7 @@ test('canceling while a native close confirmation waits preserves edits after la
   try {
     await openLibrary(context); await selectFirstFile(context);
     document.getElementById('mySaveDecryptBtn').click(); await idle(context);
-    document.querySelector('#workspaceFiles tr[data-file-path]').click(); await idle(context);
+    await openTextEditorFile(context); await idle(context);
     const editor = document.getElementById('fileEditor');
     editor.value = 'keep these edits'; editor.dispatchEvent(new window.Event('input'));
     let complete;

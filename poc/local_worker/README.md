@@ -5,6 +5,7 @@ garlic-worker save engine with a local listener and the transfer PPR oracle.
 
 - TCP 9023: one decrypt, encrypt or resign job per connection.
 - TCP 9022: existing 32-byte PPR requests and 40-byte responses.
+- TCP 9024: instance-bound shutdown control for the desktop app.
 - A common mutex serializes save operations and borrowed PPR credentials.
 - If another oracle owns 9022, it stays in place and 9023 remains available.
 - No public worker server, worker key or `/data/garlic/config.ini` is used.
@@ -12,7 +13,12 @@ garlic-worker save engine with a local listener and the transfer PPR oracle.
 GarlicTransfer deploys `garlic-local-worker.elf` through the configured PS5
 payload listener when local save processing is selected. The console must be
 jailbroken and expose the same save services required by garlic-worker.
-The helper runs until the console or payload is stopped.
+Closing GarlicTransfer requests shutdown of the compatible helper used by that
+app session. An active job finishes its unmount, credential restore and folder
+cleanup before the helper joins its PPR/control threads and exits. A canceled
+close leaves the helper running. Other oracle processes are not stopped.
+An old helper must be restarted with this build before automatic shutdown is
+available. Loss of network access or forced app termination can leave it running.
 
 Temporary jobs use newly created folders under `/data/garlic/local-work`.
 Each connection owns its folder and removes that folder when finished.

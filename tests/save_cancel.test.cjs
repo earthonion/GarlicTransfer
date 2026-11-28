@@ -101,8 +101,42 @@ async function fixture(t, { pack, worker, ensure } = {}) {
     signal: 'untrusted renderer signal',
   };
   const invoke = (name, data) => handlers.get(`save-editor:${name}`)({ sender }, data);
-  return { root, source, output, userDataRoot, calls, store, options, invoke };
+  return { root, source, output, userDataRoot, calls, store, options, invoke, api: context.module.exports };
 }
+
+test('app shutdown cancels a save job, waits for cleanup and blocks new save jobs', async t => {
+  const started = gate(), canceled = gate(), cleanup = gate();
+  const f = await fixture(t, { worker: async ({ signal }) => {
+    started.resolve();
+    await new Promise(resolve => signal.addEventListener('abort', () => { canceled.resolve(); resolve(); }, { once: true }));
+    await cleanup.promise;
+    throw Object.assign(new Error('Local save operation canceled'), { name: 'AbortError' });
+  } });
+  const running = f.invoke('job', f.options);
+  const rejected = assert.rejects(running, { name: 'AbortError' });
+  await started.promise;
+  let stopped = false;
+  const closing = f.api.stopSaveJobs().then(() => { stopped = true; });
+  const repeated = f.api.stopSaveJobs();
+  await canceled.promise;
+  assert.equal(stopped, false);
+  await assert.rejects(f.invoke('job', f.options), /closing/);
+  cleanup.resolve();
+  await Promise.all([closing, repeated, rejected]);
+  assert.equal(stopped, true);
+  assert.equal(await fsp.readFile(f.source, 'utf8'), 'original source save');
+  assert.equal(await fsp.readFile(f.output, 'utf8'), 'previous export');
+  assert.deepEqual(await fsp.readdir(path.join(f.userDataRoot, 'save-editor')), []);
+});
+
+test('app shutdown without an active save still prevents a late save job', async t => {
+  const f = await fixture(t);
+  await f.api.stopSaveJobs();
+  await assert.rejects(f.invoke('job', f.options), /closing/);
+  assert.deepEqual(f.calls.zip, []);
+  assert.deepEqual(f.calls.helper, []);
+  assert.deepEqual(f.calls.worker, []);
+});
 
 test('cancel waits for the packing child to close and preserves workspace leases until cleanup', { timeout: 10000 }, async t => {
   const packing = gate();

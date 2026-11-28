@@ -97,6 +97,8 @@ contextBridge.exposeInMainWorld('saveEditor', {
   info: (root) => ipcRenderer.invoke('save-editor:info', root),
   read: (options) => ipcRenderer.invoke('save-editor:read', options),
   write: (options) => ipcRenderer.invoke('save-editor:write', options),
+  readPage: (options) => ipcRenderer.invoke('save-editor:read-page', options),
+  writePages: (options) => ipcRenderer.invoke('save-editor:write-pages', options),
   add: (root) => ipcRenderer.invoke('save-editor:add', { root }),
   replace: (options) => ipcRenderer.invoke('save-editor:replace', options),
   delete: (options) => ipcRenderer.invoke('save-editor:delete', options),

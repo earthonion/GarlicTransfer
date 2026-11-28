@@ -1,6 +1,7 @@
 const net = require('node:net');
 const fs = require('node:fs');
-const { SAVE_PORT, PPR_PORT, LOADER_PORT, MAX_GREETING_BYTES, isWorkerGreeting } = require('./local_protocol.cjs');
+const { SAVE_PORT, PPR_PORT, CONTROL_PORT, LOADER_PORT, MAX_GREETING_BYTES, isWorkerGreeting } = require('./local_protocol.cjs');
+const { shutdownLocalWorker } = require('./local_worker.cjs');
 
 // Function Helper Check
 function probeHelper(host, port, timeoutMs, signal, greeting = true) {
@@ -10,13 +11,13 @@ function probeHelper(host, port, timeoutMs, signal, greeting = true) {
     let finished = false;
     let connected = false;
     let buffer = Buffer.alloc(0);
-    const finish = ready => {
+    const finish = (ready, hello) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', canceled);
       socket.destroy();
-      resolve({ ready, connected });
+      resolve({ ready, connected, ...(hello ? { hello } : {}) });
     };
     const canceled = () => finish(false);
     const timer = setTimeout(canceled, timeoutMs);
@@ -32,7 +33,7 @@ function probeHelper(host, port, timeoutMs, signal, greeting = true) {
       if (buffer.length < size + 4) return;
       try {
         const hello = JSON.parse(buffer.subarray(4, size + 4).toString('utf8'));
-        finish(isWorkerGreeting(hello));
+        finish(isWorkerGreeting(hello), isWorkerGreeting(hello) ? hello : undefined);
       } catch { finish(false); }
     });
     socket.once('end', canceled);
@@ -54,15 +55,38 @@ function delay(ms, signal) {
 // Function Local Helper
 class LocalHelper {
   constructor({ elfPath, onLog = () => {}, port = SAVE_PORT, loaderPort = LOADER_PORT, readyTimeoutMs = 15000,
-    connectTimeoutMs = 10000, uploadTimeoutMs = 30000, probeTimeoutMs = 500, retryIntervalMs = 150 }) {
+    connectTimeoutMs = 10000, uploadTimeoutMs = 30000, probeTimeoutMs = 500, retryIntervalMs = 150,
+    controlPort = CONTROL_PORT, shutdownTimeoutMs = 5000 }) {
     Object.assign(this, { elfPath, onLog, port, loaderPort, readyTimeoutMs, connectTimeoutMs,
-      uploadTimeoutMs, probeTimeoutMs, retryIntervalMs });
+      uploadTimeoutMs, probeTimeoutMs, retryIntervalMs, controlPort, shutdownTimeoutMs });
     this.pending = new Map();
     this.hostTasks = new Map();
     this.sockets = new Set();
     this.controllers = new Set();
     this.reads = new Map();
+    this.usedHelpers = new Map();
+    this.deployedHosts = new Set();
+    this.shutdownWarnings = new Set();
+    this.shutdownTask = null;
     this.stopped = false;
+  }
+
+  // Function Helper Identity
+  async remember(host, service, result, signal) {
+    if (!service.greeting && service.port !== PPR_PORT) return;
+    const checked = service.greeting ? result : await probeHelper(host, this.port, this.probeTimeoutMs, signal);
+    const hello = checked.hello;
+    if (!checked.ready || !hello || (!service.greeting && hello.owns_ppr !== true)) return;
+    if (!Array.isArray(hello.capabilities) || !hello.capabilities.includes('shutdown')
+        || !/^[0-9a-f]{32}$/.test(hello.instance_id || '') || hello.shutdown_port !== this.controlPort) {
+      if (!this.shutdownWarnings.has(host)) {
+        this.shutdownWarnings.add(host);
+        this.onLog(`[local] The helper at ${host} cannot stop automatically. Restart it with the updated payload.`);
+      }
+      return;
+    }
+    this.shutdownWarnings.delete(host);
+    this.usedHelpers.set(host, { host, instanceId: hello.instance_id, port: hello.shutdown_port });
   }
 
   // Function Helper Loading
@@ -110,7 +134,7 @@ class LocalHelper {
     try {
       const probe = () => probeHelper(host, service.port, this.probeTimeoutMs, signal, service.greeting);
       const initial = await probe();
-      if (initial.ready) return;
+      if (initial.ready) { await this.remember(host, service, initial, signal); return; }
       if (signal.aborted) throw new Error('Local save helper has stopped.');
       const occupied = service.greeting && initial.connected;
       const fresh = !shared.readyDeadline && !occupied;
@@ -125,19 +149,24 @@ class LocalHelper {
       if (occupied) this.onLog(`[local] Waiting for the save helper at ${host}:${service.port}`);
       if (fresh) {
         delivery = this.deploy(host, { signal, service }).then(() => {
+          this.deployedHosts.add(host);
           settled = true;
           readyDeadline = Date.now() + this.readyTimeoutMs;
         }, error => { settled = true; deliveryError = error; });
       }
       while (!signal.aborted) {
-        if ((await probe()).ready) {
+        const current = await probe();
+        if (current.ready) {
+          await this.remember(host, service, current, signal);
           if (fresh) shared.readyDeadline = Date.now() + this.readyTimeoutMs;
           this.onLog(`[local] ${service.name} ready at ${host}:${service.port}`);
           return;
         }
         if (signal.aborted) break;
         if (settled && deliveryError) {
-          if ((await probe()).ready) {
+          const retried = await probe();
+          if (retried.ready) {
+            await this.remember(host, service, retried, signal);
             if (fresh) shared.readyDeadline = Date.now() + this.readyTimeoutMs;
             this.onLog(`[local] ${service.name} ready at ${host}:${service.port}`);
             return;
@@ -225,6 +254,37 @@ class LocalHelper {
     for (const controller of this.controllers) controller.abort();
     for (const socket of this.sockets) socket.destroy();
     this.sockets.clear();
+  }
+
+  // Function Helper Shutdown
+  shutdown() {
+    if (this.shutdownTask) return this.shutdownTask;
+    this.stop();
+    this.shutdownTask = (async () => {
+      await Promise.allSettled([...this.pending.values(), ...this.reads.values()]);
+      await Promise.all([...this.deployedHosts].filter(host => !this.usedHelpers.has(host)).map(async host => {
+        const deadline = Date.now() + this.readyTimeoutMs;
+        do {
+          const result = await probeHelper(host, this.port, this.probeTimeoutMs);
+          await this.remember(host, { greeting: true }, result);
+          if (this.usedHelpers.has(host) || result.ready) break;
+          if (Date.now() >= deadline) break;
+          await new Promise(resolve => setTimeout(resolve, this.retryIntervalMs));
+        } while (Date.now() < deadline);
+      }));
+      await Promise.all([...this.usedHelpers.values()].map(async identity => {
+        try {
+          await shutdownLocalWorker({ ...identity, timeoutMs: this.shutdownTimeoutMs });
+          this.onLog(`[local] Shutdown requested for GarlicWorker.elf at ${identity.host}; it will stop after save cleanup.`);
+        } catch (error) {
+          this.onLog(`[local] Could not stop GarlicWorker.elf at ${identity.host}: ${error.message}`);
+        }
+      }));
+      this.usedHelpers.clear();
+      this.deployedHosts.clear();
+      this.shutdownWarnings.clear();
+    })();
+    return this.shutdownTask;
   }
 }
 

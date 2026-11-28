@@ -20,6 +20,7 @@
 #include "log.h"
 
 int sceUserServiceInitialize(void *);
+int sceKernelSetProcessName(const char *);
 pthread_mutex_t local_operation_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // Function Credential Backup
@@ -106,6 +107,10 @@ static pid_t local_shellcore(void) {
 static int local_derive(const uint8_t input[32], uint8_t output[40]) {
     int result = -1;
     pthread_mutex_lock(&local_operation_mutex);
+    if (local_shutdown_requested()) {
+        pthread_mutex_unlock(&local_operation_mutex);
+        return -1;
+    }
     local_credentials_t saved;
     local_credentials_save(&saved);
     pid_t shellcore = local_shellcore();
@@ -150,17 +155,20 @@ static int local_bytes(int client, uint8_t *buffer, size_t length, int writing) 
 // Function Oracle Loading
 static void *local_oracle(void *argument) {
     int listener = *(int *)argument;
-    for (;;) {
-        int client = accept(listener, NULL, NULL);
-        if (client < 0) continue;
+    while (!local_shutdown_requested()) {
+        int client = local_shutdown_accept(listener);
+        if (client < 0) break;
+        if (local_shutdown_track(LOCAL_PPR_CLIENT, client)) { close(client); break; }
         struct timeval timeout = {30, 0};
         setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
         setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
         uint8_t request[32], response[40];
-        while (local_bytes(client, request, sizeof(request), 0) == 0 &&
+        while (!local_shutdown_requested() &&
+               local_bytes(client, request, sizeof(request), 0) == 0 &&
+               !local_shutdown_requested() &&
                local_derive(request, response) == 0 &&
                local_bytes(client, response, sizeof(response), 1) == 0) {}
-        close(client);
+        local_shutdown_close(LOCAL_PPR_CLIENT, client);
     }
     return NULL;
 }
@@ -169,6 +177,7 @@ static void *local_oracle(void *argument) {
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGPIPE, SIG_IGN);
+    local_shutdown_init();
     int save_listener = local_listener(LOCAL_SAVE_PORT);
     if (save_listener < 0) { perror("local save listener"); return 1; }
     int ppr_listener = local_listener(LOCAL_PPR_PORT);
@@ -179,16 +188,31 @@ int main(void) {
     mkdir("/data/garlic/local-work", 0777);
     mkdir("/data/save_files", 0777);
     log_init();
+    int name_result = sceKernelSetProcessName("GarlicWorker.elf");
+    if (name_result != 0)
+        garlic_log("[local] Could not name worker process: 0x%08x\n", (unsigned)name_result);
     savedata_init();
     zip_init_crc();
+    pthread_t ppr_thread;
+    int ppr_started = 0;
     if (ppr_listener >= 0) {
-        pthread_t thread;
-        if (pthread_create(&thread, NULL, local_oracle, &ppr_listener) != 0) {
+        if (pthread_create(&ppr_thread, NULL, local_oracle, &ppr_listener) != 0) {
             close(ppr_listener);
+            ppr_listener = -1;
             garlic_log("[local] Could not start the PPR listener\n");
-        } else pthread_detach(thread);
+        } else ppr_started = 1;
     } else garlic_log("[local] Keeping the existing PPR listener on 9022\n");
+    local_shutdown_owns_ppr(ppr_started);
+    if (local_control_start(LOCAL_CONTROL_PORT))
+        garlic_log("[local] Shutdown control unavailable on %d\n", LOCAL_CONTROL_PORT);
     garlic_log("[local] Save jobs ready on %d (%s)\n", LOCAL_SAVE_PORT, LOCAL_PROTOCOL);
     worker_loop_local(save_listener);
+    local_shutdown_request();
+    close(save_listener);
+    if (ppr_started) pthread_join(ppr_thread, NULL);
+    if (ppr_listener >= 0) close(ppr_listener);
+    local_control_stop();
+    garlic_log("[local] Worker stopped\n");
+    log_flush();
     return 0;
 }

@@ -137,6 +137,55 @@ test('local encrypt packs a stored workspace and local resign packs original sav
   assert.equal(await fsp.readFile(f.source, 'utf8'), 'original encrypted save');
 });
 
+test('PPSA changes reach local encrypt and resign without editing their source files', async (t) => {
+  const f = await fixture(t);
+  for (const operation of ['encrypt', 'resign']) {
+    await f.api.runSaveJob({
+      ...f.common, operation, accountId: '0833114e9585c53c', targetTitleId: ' ppsa54321 ',
+      output: path.join(f.root, `${operation}-new-title.zip`),
+      ...(operation === 'encrypt' ? { workspace: f.workspace } : { inputs: [f.source] }),
+    });
+    const job = f.calls.worker.at(-1);
+    assert.equal(job.operation, operation);
+    assert.equal(job.params.target_title_id, 'PPSA54321');
+    assert.equal(job.params.account_id, '0833114e9585c53c');
+  }
+  assert.equal(f.calls.fetch, 0);
+  assert.equal(await fsp.readFile(f.source, 'utf8'), 'original encrypted save');
+  assert.equal(await fsp.readFile(path.join(f.workspace, 'game.dat'), 'utf8'), 'edited save data');
+});
+
+test('invalid or unsupported PPSA changes stop before packing, deployment or upload', async (t) => {
+  const f = await fixture(t);
+  const options = {
+    ...f.common, operation: 'encrypt', workspace: f.workspace,
+    accountId: '0833114e9585c53c', output: path.join(f.root, 'retitled.zip'),
+  };
+  for (const targetTitleId of ['PPSA1234', 'PPSA123456', 'CUSA12345', 'PPSA12A45', 'PPSA12345/../']) {
+    await assert.rejects(f.api.runSaveJob({ ...options, targetTitleId }), /PPSA|title ID/i);
+  }
+  await assert.rejects(f.api.runSaveJob({
+    ...options, targetTitleId: 'PPSA54321', operation: 'decrypt', inputs: [f.source],
+  }), /encrypt|resign|PPSA|title ID/i);
+  await assert.rejects(f.api.runSaveJob({
+    ...options, targetTitleId: 'PPSA54321', useRemoteOracle: true, workerKey: 'test-key',
+  }), /local|PPSA|title ID/i);
+  assert.deepEqual(f.calls.zip, []);
+  assert.deepEqual(f.calls.helper, []);
+  assert.deepEqual(f.calls.worker, []);
+  assert.equal(f.calls.fetch, 0);
+  await assert.rejects(fsp.access(options.output), { code: 'ENOENT' });
+});
+
+test('a blank PPSA target retains the normal local job format', async (t) => {
+  const f = await fixture(t);
+  await f.api.runSaveJob({
+    ...f.common, operation: 'encrypt', workspace: f.workspace, targetTitleId: '   ',
+    accountId: '0833114e9585c53c', output: path.join(f.root, 'unchanged-title.zip'),
+  });
+  assert.equal(Object.hasOwn(f.calls.worker[0].params, 'target_title_id'), false);
+});
+
 test('local routing validates the PS5 address and never falls back to a hosted worker', async (t) => {
   const f = await fixture(t);
   await assert.rejects(f.api.runSaveJob({ ...f.common, oracleHost: 'https://garlicsaves.com', operation: 'decrypt', inputs: [f.source] }), /valid local oracle IP/);

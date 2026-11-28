@@ -8,22 +8,32 @@ for (const id of [
   'uploadSaveBtn', 'uploadEncryptedBtn', 'workspaceMoreBtn', 'workspaceMoreOptions', 'fileMoreBtn', 'fileMoreOptions',
   'mySaveImportBtn', 'resignPanel', 'resignAccountId', 'confirmResignBtn', 'workspacePanel',
   'workspaceSummary', 'closeWorkspaceBtn', 'exportDecryptedBtn', 'addFilesBtn', 'encryptSaveBtn',
+  'workspaceCounts', 'workspaceGameId', 'workspaceGameName', 'workspaceBatchWarning',
+  'workspaceAccountControls', 'workspaceCurrentAccount', 'workspaceAccountSlot', 'workspaceAccountId', 'workspaceBatchAccountId', 'addCurrentAccountBtn', 'reRegionScope',
   'encryptPanel', 'encryptAccountId', 'confirmEncryptBtn', 'workspaceFiles', 'fileEditorPanel',
-  'editorFileName', 'editorMode', 'fileEditor', 'editorHint', 'editorSearch', 'editorFindNext',
+  'editorFileName', 'editorMode', 'editorScroll', 'editorScrollTrack', 'fileEditor', 'editorHint', 'editorSearch', 'editorFindNext',
   'editorOffset', 'editorGoOffset', 'editorRevert', 'editorByteCount', 'saveFileBtn', 'downloadFileBtn',
   'replaceFileBtn', 'deleteFileBtn', 'mySavesStatus', 'mySavesLog',
+  'targetTitleId', 'targetTitleIdHint',
+  'fileEditorDialog', 'closeFileEditorBtn', 'editorStatus', 'reRegionBtn', 'resignReRegionBtn',
+  'reRegionDialog', 'reRegionForm', 'reRegionCurrentTitle', 'reRegionError', 'applyReRegionBtn', 'cancelReRegionBtn', 'workspaceTargetTitle',
 ]) myControls[id] = document.getElementById(id);
 myControls.mySavesTab = document.getElementById('libraryPage');
+const editorButtons = [...myControls.fileEditorDialog.querySelectorAll('button')];
+const editorInputs = [...myControls.fileEditorDialog.querySelectorAll('.editor-tools input')];
 
 let currentWizardStep = 0;
 function goToLibraryStep(step) {
   currentWizardStep = step;
-  const accountControls = document.getElementById('workspaceAccountControls');
-  const accountHost = step === 1 ? myControls.selectedSavePanel : document.querySelector('.workspace-heading');
+  const accountControls = myControls.workspaceAccountControls;
+  const accountHost = step === 1 ? myControls.selectedSavePanel : document.querySelector('.workspace-header');
   if (accountControls && accountHost && accountControls.parentElement !== accountHost) {
     if (step === 1) accountHost.prepend(accountControls);
     else accountHost.append(accountControls);
   }
+  const currentAccount = myControls.workspaceCurrentAccount;
+  const currentAccountHost = step === 1 ? accountControls : myControls.workspaceAccountSlot;
+  if (currentAccount.parentElement !== currentAccountHost) currentAccountHost.prepend(currentAccount);
   for (const panel of document.querySelectorAll('.wizard-panel')) {
     const isTarget = panel.dataset.wizard === String(step);
     panel.classList.toggle('active', isTarget);
@@ -33,6 +43,7 @@ function goToLibraryStep(step) {
     btn.classList.toggle('active', s === step);
     btn.classList.toggle('done', s < step);
   }
+  updateTitleControls();
 }
 for (const btn of document.querySelectorAll('.wizard-step')) {
   btn.addEventListener('click', () => {
@@ -65,6 +76,9 @@ let decryptedTemporaryId = null;
 let workspaceDetails = null;
 let accountWorkspace = null;
 let selectedWorkspaceFile = null;
+let selectedWorkspacePath = '';
+let editorOpener = null;
+let reRegionDraft = null;
 let selectedFileBytes = null;
 let editorDirty = false;
 let workspaceModified = false;
@@ -73,10 +87,31 @@ let myOperationSequence = 0;
 let myCancelOperation = 0;
 let myCancellationSequence = 0;
 let workspaceTree = null;
-const MAX_EDITOR_FILE_BYTES = 8 * 1024 * 1024;
+let editorRevision = 0;
+let editorCountTimer = null;
+let editorParsedDraft = null;
+let editorSearchState = null;
+const PAGED_EDITOR_THRESHOLD = 256 * 1024;
+let pagedEditor = null;
+let editorPageStart = 0;
+let editorPageChanged = false;
+let editorVisibleLength = 0;
+const editorScroller = window.EditorScroll?.create({
+  editor: myControls.fileEditor,
+  rail: myControls.editorScroll,
+  track: myControls.editorScrollTrack,
+  getView: () => pagedEditor && {
+    key: pagedEditor, start: editorPageStart, length: editorVisibleLength,
+    size: pagedEditor.size - selectedFileBytes.length + editorVisibleLength,
+    mode: myControls.editorMode.value, dirty: editorPageChanged, blocked: saveControlsBlocked(),
+  },
+  move: scrollEditorTo,
+  onError: error => myStatus(error.message),
+});
 
 function myStatus(message) {
   myControls.mySavesStatus.textContent = message;
+  if (myControls.fileEditorDialog.open) myControls.editorStatus.textContent = message;
 }
 
 function myLog(message) {
@@ -84,11 +119,11 @@ function myLog(message) {
   myControls.mySavesLog.scrollTop = myControls.mySavesLog.scrollHeight;
 }
 
-// Function Account Selection
+// Function = Account Selection
 const savedAccounts = window.saveAccounts && window.SavedAccounts?.create(document, window.saveAccounts, {
-  isBusy: () => Boolean(mySaveOperation || activeTransfer || browseSessionActive),
+  isBusy: saveControlsBlocked,
   onTargetChange: id => {
-    myControls.encryptAccountId.value = id || workspaceDetails?.accountId || '';
+    myControls.encryptAccountId.value = id || workspaceAccountId();
     myControls.resignAccountId.value = id || '';
     const fixedAccount = savedAccounts.isUsingCurrent() || Boolean(savedAccounts.getSelectedId());
     myControls.encryptAccountId.readOnly = fixedAccount;
@@ -96,7 +131,7 @@ const savedAccounts = window.saveAccounts && window.SavedAccounts?.create(docume
   },
 });
 
-// Function Account Closing
+// Function = Account Closing
 window.saveAccounts?.onBeforeClose?.(async () => {
   setAccountClosing(true);
   savedAccounts?.setBusy(true);
@@ -108,23 +143,137 @@ window.saveAccounts?.onBeforeClose?.(async () => {
 document.addEventListener('transfer-state-changed', () => {
   savedAccounts?.setBusy(mySaveOperation || accountClosing);
   workspaceTree?.setBusy(mySaveOperation || accountClosing || Boolean(activeTransfer) || browseSessionActive);
+  updateTitleControls();
+  updateMyFileActions();
 });
 
+// Function = Title Selection
+function updateTitleControls() {
+  const remote = controls.useRemoteOracle.checked;
+  const disabled = remote || saveControlsBlocked();
+  myControls.targetTitleId.disabled = disabled;
+  myControls.applyReRegionBtn.disabled = disabled;
+  myControls.reRegionBtn.disabled = disabled || !decryptedWorkspace;
+  myControls.resignReRegionBtn.disabled = disabled || !selectedLocalSave;
+  myControls.cancelReRegionBtn.disabled = saveControlsBlocked();
+  myControls.targetTitleIdHint.textContent = remote
+    ? uiText('Use the local worker to change the PPSA title.')
+    : uiText('Leave blank to keep the title. A changed PPSA exports a new encrypted ZIP.');
+  const title = myControls.targetTitleId.value.trim().toUpperCase();
+  myControls.workspaceTargetTitle.hidden = !title || remote;
+  myControls.workspaceTargetTitle.textContent = title ? uiText`ReRegion to ${title} when encrypting` : '';
+}
+
+// Function = Region Dialog
+function openReRegion(opener = document.activeElement) {
+  if (myControls.targetTitleId.disabled || (!decryptedWorkspace && !selectedLocalSave) || reRegionDraft) return;
+  closeExportMenu();
+  reRegionDraft = { value: myControls.targetTitleId.value, opener };
+  const sources = workspaceSaves().map(save => save.titleId);
+  const titles = [...new Set(sources.length ? sources : [workspaceDetails?.titleId || selectedLocalSave?.entry.title || ''])].filter(Boolean);
+  myControls.reRegionCurrentTitle.textContent = titles.length > 1 ? uiText('Multiple PPSAs') : titles[0] || uiText('Not available');
+  myControls.reRegionCurrentTitle.title = titles.join(', ');
+  const scope = myControls.reRegionScope;
+  scope.hidden = workspaceSaves().length < 2;
+  scope.textContent = workspaceSaves().length > 1 ? uiText`Applies to all ${workspaceSaves().length} saves when encrypting.` : '';
+  myControls.reRegionError.textContent = '';
+  myControls.targetTitleId.removeAttribute('aria-invalid');
+  openSaveDialog(myControls.reRegionDialog);
+  myControls.targetTitleId.focus();
+  myControls.targetTitleId.select();
+}
+
+// Function = Region Closing
+function closeReRegion(restore = true) {
+  if (!reRegionDraft) return;
+  const previous = reRegionDraft;
+  reRegionDraft = null;
+  if (restore) myControls.targetTitleId.value = previous.value;
+  closeSaveDialog(myControls.reRegionDialog);
+  updateTitleControls();
+  if (previous.opener?.isConnected) previous.opener.focus();
+}
+
+// Function = Save Dialogs
+function openSaveDialog(dialog) {
+  if (dialog.open) return;
+  if (typeof dialog.showModal === 'function') dialog.showModal();
+  else dialog.setAttribute('open', '');
+}
+
+function closeSaveDialog(dialog) {
+  if (!dialog.open) return;
+  if (typeof dialog.close === 'function') dialog.close();
+  else dialog.removeAttribute('open');
+}
+
+myControls.reRegionBtn.addEventListener('click', () => openReRegion(myControls.workspaceMoreBtn));
+myControls.resignReRegionBtn.addEventListener('click', () => openReRegion(myControls.saveMoreBtn));
+myControls.reRegionForm.addEventListener('submit', event => {
+  event.preventDefault();
+  if (!reRegionDraft || myControls.applyReRegionBtn.disabled) return;
+  const title = myControls.targetTitleId.value.trim().toUpperCase();
+  if (title && !/^PPSA\d{5}$/.test(title)) {
+    myControls.reRegionError.textContent = uiText('Enter PPSA followed by five digits, for example PPSA12345.');
+    myControls.targetTitleId.setAttribute('aria-invalid', 'true');
+    myControls.targetTitleId.focus();
+    return;
+  }
+  myControls.targetTitleId.value = title;
+  myControls.targetTitleId.removeAttribute('aria-invalid');
+  closeReRegion(false);
+});
+myControls.cancelReRegionBtn.addEventListener('click', () => { if (!myControls.cancelReRegionBtn.disabled) closeReRegion(); });
+myControls.reRegionDialog.addEventListener('cancel', event => { event.preventDefault(); if (!myControls.cancelReRegionBtn.disabled) closeReRegion(); });
+myControls.reRegionDialog.addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); if (!myControls.cancelReRegionBtn.disabled) closeReRegion(); }
+});
+
+function selectedTargetTitleId(sourceTitleId, saves = []) {
+  if (controls.useRemoteOracle.checked) return '';
+  const title = myControls.targetTitleId.value.trim().toUpperCase();
+  if (!title) return '';
+  if (!/^PPSA\d{5}$/.test(title)) throw new Error('Enter a target title as PPSA followed by five digits, for example PPSA12345.');
+  myControls.targetTitleId.value = title;
+  const sources = saves.map(save => save.titleId);
+  return (sources.length ? sources : [sourceTitleId]).every(source => title === String(source || '').toUpperCase()) ? '' : title;
+}
+
+// Function = Workspace Saves
+function workspaceSaves() {
+  return Array.isArray(workspaceDetails?.saves) && workspaceDetails.saves.length > 1 ? workspaceDetails.saves : [];
+}
+
+// Function = Workspace Account
+function workspaceAccountId() {
+  const saves = workspaceSaves();
+  if (!saves.length) return workspaceDetails?.accountId || '';
+  const ids = new Set(saves.map(save => String(save.accountId || '').toLowerCase()));
+  return ids.size === 1 ? [...ids][0] : '';
+}
+
+for (const control of [controls.useRemoteOracle, document.getElementById('cmpWorker')]) {
+  control?.addEventListener('change', () => {
+    if (controls.useRemoteOracle.checked) { closeReRegion(); myControls.targetTitleId.value = ''; }
+    updateTitleControls();
+  });
+}
+
 function setMyOperation(value) {
+  if (value) editorScroller?.pause();
   mySaveOperation = value;
   myControls.localConsoleSelect.disabled = value;
   myControls.localUserSelect.disabled = value;
   cmpLayout.setLibraryBusy(value);
   for (const button of document.querySelectorAll('#libraryPage button')) button.disabled = value;
-  for (const input of document.querySelectorAll('.editor-tools input')) input.disabled = value;
-  myControls.fileEditor.disabled = value;
-  myControls.editorMode.disabled = value;
   myControls.resignAccountId.disabled = value;
   myControls.encryptAccountId.disabled = value;
   myControls.workspaceFiles.style.pointerEvents = value ? 'none' : '';
   workspaceTree?.setBusy(value || accountClosing);
   savedAccounts?.setBusy(value || accountClosing);
-  if (!value) updateMyFileActions();
+  updateMyFileActions();
+  updateTitleControls();
+  if (!value) editorScroller?.sync();
 }
 
 async function runMyOperation(action) {
@@ -158,14 +307,14 @@ async function runMyOperation(action) {
   }
 }
 
-// Function Save Confirmation
+// Function = Save Confirmation
 async function confirmSaveAction(message) {
   const cancellation = myCancellationSequence;
   const confirmed = await confirmAction(message);
   return confirmed && cancellation === myCancellationSequence;
 }
 
-// Function Save Cancellation
+// Function = Save Cancellation
 async function cancelMySaveOperation() {
   if (!mySaveOperation || activeTransfer !== 'save-editor') return;
   const operation = myOperationSequence;
@@ -197,36 +346,36 @@ async function cancelMySaveOperation() {
   }
 }
 
-// Function Save File Key
+// Function = Save File Key
 function localSaveKey(save) { return window.SaveTreeBridge.fileKey(save.entry, save.file); }
 
-// Function Save Source
+// Function = Save Source
 function localSaveOptions(save = selectedLocalSave) {
   return { ...(save.entry.localSource === 'pc' ? { localSource: 'pc' } : { assets: options().assets }),
     entryId: save.entry.id, filename: save.file.file };
 }
 
-// Function Save Options
+// Function = Save Options
 function saveJobOptions() {
   const current = options();
   return { serverUrl: current.serverUrl, workerKey: current.workerKey,
     useRemoteOracle: current.useRemoteOracle, oracleHost: current.oracleHost };
 }
 
-// Function Temporary Release
+// Function = Temporary Release
 async function releaseSaveTemporary(id) {
   if (!id || typeof window.saveEditor.releaseTemporary !== 'function') return;
   try { await window.saveEditor.releaseTemporary(id); }
   catch (error) { myLog(uiText`Could not clear temporary save files: ${error.message}`); }
 }
 
-// Function Empty Source
+// Function = Empty Source
 function emptyLocalMessage() {
   return localPcMode ? (localPcInventory.root ? 'No supported encrypted PS5 saves found in this folder.' : 'Choose a Saves folder on your PC to get started.')
     : 'Download a save with the Transfer tab, or decrypt another save.';
 }
 
-// Function Source Users
+// Function = Source Users
 function renderLocalUsers(ids, users) {
   const previous = myControls.localUserSelect.value;
   myControls.localUserSelect.replaceChildren();
@@ -241,14 +390,13 @@ function renderLocalUsers(ids, users) {
   myControls.localUserSelect.value = ids.some(id => String(id).toLowerCase() === previous) ? previous : '';
 }
 
-// Function Local Tree
+// Function = Local Tree
 const libraryTree = window.SaveTreeBridge.library({
   layout: cmpLayout, onOpen: (save) => selectMySave(save),
   onAction: (action) => myControls[action].click(), isBusy: () => accountClosing || mySaveOperation,
 });
 
-// Local saves matching the search box: title, title ID, filename, user or entry ID.
-// Each save is matched with only its own file, so a title's other files don't match it.
+// Function = Search Saves
 function searchedMySaves() {
   const query = myControls.mySavesSearch.value;
   if (!query.trim()) return mySaves;
@@ -369,19 +517,18 @@ function renderMySaves() {
   renderClassicMySaves();
 }
 
+// Function = Empty Search
 function emptySearchRow(tbody, colSpan, message) {
   const row = document.createElement('tr'), cell = document.createElement('td');
   cell.colSpan = colSpan; cell.className = 'empty'; cell.textContent = message;
   row.appendChild(cell); tbody.appendChild(row);
 }
 
-// Function Classic Save List
+// Function = Classic Save List
 function renderClassicMySaves() {
   const allGroups = myTitleGroups();
   const query = myControls.mySavesSearch.value.trim();
   const groups = query ? myTitleGroups(searchedMySaves()) : allGroups;
-  // Look the open title up in the full library so typing narrows its saves
-  // instead of closing it.
   const selectedGroup = selectedTitle ? allGroups.get(selectedTitle) : null;
   if (selectedTitle && !selectedGroup) selectedTitle = null;
   myControls.myTitleList.hidden = Boolean(selectedTitle);
@@ -472,8 +619,9 @@ myControls.mySavesBackBtn.addEventListener('click', () => {
   myStatus(uiText('Select a title to see its saves.'));
 });
 
-// Function Save Selection
+// Function = Save Selection
 function applyMySaveSelection(save) {
+  if (!selectedLocalSave || localSaveKey(selectedLocalSave) !== localSaveKey(save)) myControls.targetTitleId.value = '';
   selectedLocalSave = save;
   myControls.selectedSavePanel.hidden = false;
   myControls.selectedSaveName.textContent = save.entry.name || save.entry.title;
@@ -499,7 +647,7 @@ function selectMySave(save) {
   });
 }
 
-// Function Local Profile
+// Function = Local Profile
 async function selectLocalConsole(profileId, { inventory, persist = true, confirmed = false } = {}) {
   const pc = profileId === LOCAL_PC_SOURCE;
   const profile = localProfiles.find((candidate) => candidate.id === profileId);
@@ -605,7 +753,7 @@ async function loadLocalProfiles() {
 
 myControls.localConsoleSelect.addEventListener('change', () => runMyOperation(() => selectLocalConsole(myControls.localConsoleSelect.value)));
 
-// Function PC Folder
+// Function = PC Folder
 myControls.chooseLocalPcFolderBtn.addEventListener('click', () => runMyOperation(async () => {
   if (!localPcMode) return;
   if (decryptedWorkspace && !await confirmSaveAction(workspaceModified || editorDirty
@@ -624,7 +772,7 @@ myControls.localUserSelect.addEventListener('change', () => runMyOperation(async
   myStatus(uiText`${mySaves.length} save file(s) in this view.`);
 }));
 
-// Function Save Refresh
+// Function = Save Refresh
 async function refreshMySaves(inventory) {
   const pc = localPcMode, assets = pc ? loadedLocalPath : options().assets, owner = myControls.localUserSelect.value.toLowerCase();
   const request = ++cmpInventoryRequest;
@@ -649,139 +797,269 @@ async function refreshMySaves(inventory) {
   return mySaves.length;
 }
 
-function updateMyFileActions() {
-  const protectedSelection = selectedWorkspaceFile?.protected;
-  myControls.deleteFileBtn.disabled = mySaveOperation || !selectedWorkspaceFile || protectedSelection;
-  myControls.saveFileBtn.disabled = mySaveOperation || !selectedWorkspaceFile || selectedFileBytes === null;
-  myControls.saveEncryptFileBtn.disabled = mySaveOperation || !selectedWorkspaceFile || selectedFileBytes === null;
-  myControls.downloadFileBtn.disabled = mySaveOperation || !selectedWorkspaceFile;
-  if (myControls.replaceFileBtn) myControls.replaceFileBtn.disabled = mySaveOperation || !selectedWorkspaceFile;
+// Function = Save Busy
+function saveControlsBlocked() {
+  return mySaveOperation || accountClosing || Boolean(activeTransfer) || browseSessionActive;
 }
 
-// Function Workspace Tree
+// Function = Editor Controls
+function updateMyFileActions() {
+  const blocked = saveControlsBlocked();
+  const readOnly = Boolean(selectedWorkspaceFile?.readOnly);
+  const editable = !blocked && selectedWorkspaceFile && !readOnly;
+  const encryptionBlocked = blocked || !decryptedWorkspace || Boolean(workspaceDetails?.batchError);
+  for (const button of editorButtons) button.disabled = blocked;
+  myControls.fileEditor.disabled = blocked || readOnly;
+  myControls.editorMode.disabled = blocked;
+  for (const input of editorInputs) input.disabled = blocked;
+  myControls.deleteFileBtn.disabled = !editable || selectedWorkspaceFile.protected;
+  myControls.saveFileBtn.disabled = !editable || selectedFileBytes === null;
+  myControls.saveEncryptFileBtn.disabled = myControls.saveFileBtn.disabled || encryptionBlocked;
+  myControls.encryptSaveBtn.disabled = encryptionBlocked;
+  myControls.confirmEncryptBtn.disabled = encryptionBlocked;
+  myControls.downloadFileBtn.disabled = blocked || !selectedWorkspaceFile;
+  if (myControls.replaceFileBtn) myControls.replaceFileBtn.disabled = !editable;
+}
+
+// Function = Workspace Tree
 workspaceTree = window.WorkspaceTree?.create(document, myControls.workspaceFiles, {
+  onSelect: file => { selectedWorkspacePath = file.path; },
+  getWorkspaceActions: () => [
+    { action: 'add-account', label: 'Add Account…', disabled: myControls.addCurrentAccountBtn.disabled, title: myControls.addCurrentAccountBtn.title },
+    { action: 'reregion', label: 'ReRegion…', disabled: myControls.reRegionBtn.disabled, title: controls.useRemoteOracle.checked ? uiText('Use the local worker to change the PPSA title.') : '' },
+  ],
   onOpen: file => runMyOperation(() => openWorkspaceFile(file)),
-  onAction: (action, file) => runMyOperation(() => {
-    if (action === 'replace') return replaceWorkspaceFile(file);
-    if (action === 'export') return exportWorkspaceFile(file);
-    if (action === 'delete') return deleteWorkspaceFile(file);
-  }),
-  isBusy: () => accountClosing || mySaveOperation || Boolean(activeTransfer) || browseSessionActive,
+  onAction: (action, file) => {
+    if (action === 'add-account') { savedAccounts?.addCurrentAccount(document.activeElement); closeExportMenu(); return; }
+    if (action === 'reregion') return openReRegion();
+    return runMyOperation(() => {
+      if (action === 'replace') return replaceWorkspaceFile(file);
+      if (action === 'export') return exportWorkspaceFile(file);
+      if (action === 'delete') return deleteWorkspaceFile(file);
+    });
+  },
+  isBusy: saveControlsBlocked,
 });
+
+// Function = Update Header
+function renderWorkspaceSummary(saves) {
+  const titles = new Set(saves.map(save => save.titleId));
+  myControls.workspaceCounts.textContent = saves.length
+    ? uiText`${saves.length} saves · ${workspaceDetails.files.length} file(s)`
+    : uiText`1 save · ${workspaceDetails.files.length} file(s)`;
+  const titleId = saves.length ? (titles.size === 1 ? [...titles][0] : '') : workspaceDetails.titleId;
+  myControls.workspaceGameId.textContent = titles.size > 1 ? uiText('Multiple PPSAs') : titleId || uiText('Unknown title');
+  myControls.workspaceGameId.title = [...titles].join(', ');
+  const nameFor = (id, name) => {
+    if (name && name !== 'Unknown title') return name;
+    return selectedLocalSave?.entry.title === id && selectedLocalSave.entry.name
+      ? selectedLocalSave.entry.name : uiText('Unknown title');
+  };
+  const gameNames = [...new Set(saves.length ? saves.map(save => nameFor(save.titleId, save.gameName)) : [nameFor(titleId, workspaceDetails.gameName)])];
+  myControls.workspaceGameName.textContent = gameNames.length > 1 ? uiText('Multiple games') : gameNames[0];
+  myControls.workspaceGameName.title = gameNames.join(', ');
+}
 
 function renderWorkspace() {
   myControls.workspacePanel.hidden = !decryptedWorkspace;
+  const error = workspaceDetails?.batchError;
+  myControls.workspaceBatchWarning.hidden = !error;
+  myControls.workspaceBatchWarning.textContent = error ? uiText`Encryption unavailable: ${error}` : '';
+  updateMyFileActions();
   if (!decryptedWorkspace || !workspaceDetails) return;
   goToLibraryStep(2);
-  myControls.workspaceSummary.textContent = uiText`${workspaceDetails.files.length} file(s)${workspaceDetails.titleId ? ` · ${workspaceDetails.titleId}` : ''}`;
+  const saves = workspaceSaves();
+  renderWorkspaceSummary(saves);
+  myControls.encryptSaveBtn.textContent = saves.length ? uiText`Encrypt all ${saves.length} saves` : uiText('Save & encrypt');
   const newAccountWorkspace = accountWorkspace !== decryptedWorkspace;
+  if (newAccountWorkspace) myControls.targetTitleId.value = '';
   accountWorkspace = decryptedWorkspace;
-  savedAccounts?.setCurrentAccount(workspaceDetails.accountId || '');
+  const currentAccountId = workspaceAccountId();
+  savedAccounts?.setCurrentAccount(currentAccountId);
+  const mixedAccounts = saves.length > 1 && !currentAccountId;
+  myControls.workspaceAccountId.hidden = mixedAccounts;
+  myControls.workspaceBatchAccountId.hidden = !mixedAccounts;
   myControls.encryptAccountId.value = savedAccounts
-    ? savedAccounts.getTargetId(newAccountWorkspace ? workspaceDetails.accountId || '' : myControls.encryptAccountId.value || workspaceDetails.accountId || '')
-    : workspaceDetails.accountId || myControls.encryptAccountId.value;
+    ? savedAccounts.getTargetId(newAccountWorkspace ? currentAccountId : myControls.encryptAccountId.value || currentAccountId)
+    : currentAccountId || myControls.encryptAccountId.value;
   if (workspaceTree) {
-    workspaceTree.render(workspaceDetails.files, selectedWorkspaceFile?.path, decryptedWorkspace);
+    workspaceTree.render(workspaceDetails.files, selectedWorkspacePath, decryptedWorkspace);
     return;
   }
   myControls.workspaceFiles.replaceChildren();
   for (const file of workspaceDetails.files) {
     const row = document.createElement('tr');
     row.dataset.filePath = file.path;
-    if (selectedWorkspaceFile?.path === file.path) row.className = 'selected';
+    if (file.readOnly) row.title = uiText('chives.json is read-only.');
+    if (selectedWorkspacePath === file.path) row.className = 'selected';
     const name = document.createElement('td');
     name.textContent = file.path;
     const size = document.createElement('td');
     size.textContent = file.size < 1024 ? `${file.size} B` : `${(file.size / 1024).toFixed(1)} KiB`;
     row.append(name, size);
-    row.addEventListener('click', () => runMyOperation(() => openWorkspaceFile(file)));
+    row.addEventListener('click', () => { selectedWorkspacePath = file.path; renderWorkspace(); });
+    row.addEventListener('dblclick', () => runMyOperation(() => openWorkspaceFile(file)));
     myControls.workspaceFiles.appendChild(row);
   }
 }
 
-function bytesToHex(bytes) {
-  const lines = [];
-  for (let offset = 0; offset < bytes.length; offset += 16) {
-    const chunk = [...bytes.slice(offset, offset + 16)];
-    const hex = chunk.map((byte) => byte.toString(16).padStart(2, '0')).join(' ');
-    const utf8 = chunk.map((byte) => byte >= 0x20 && byte <= 0x7e ? String.fromCharCode(byte) : '.').join('');
-    lines.push(`${offset.toString(16).padStart(8, '0')}  ${hex.padEnd(47, ' ')} |${utf8}|`);
+function bytesToHex(bytes, offset = 0) {
+  return window.EditorBytes.formatHex(bytes, offset);
+}
+
+function editorBytes(mode = myControls.editorMode.value) {
+  return window.EditorBytes.parse(myControls.fileEditor.value, mode);
+}
+
+// Function = Check Text
+function losslessEditorText(bytes) {
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  // A textarea converts CR and CRLF to LF.
+  if (!text.includes('\r')) {
+    const encoded = new TextEncoder().encode(text);
+    if (encoded.length === bytes.length && bytes.every((byte, index) => byte === encoded[index])) return text;
   }
-  return lines.join('\n');
+  throw new Error('Text would change the file bytes.');
 }
 
-function editorBytes() {
-  if (myControls.editorMode.value === 'text') return new TextEncoder().encode(myControls.fileEditor.value);
-  const text = myControls.fileEditor.value
-    .replace(/^[0-9a-f]{8}\s+/gm, '')
-    .replace(/\s*\|[^|]*\|\s*$/gm, '')
-    .replace(/\s+/g, '');
-  if (text.length % 2 || /[^0-9a-f]/i.test(text)) throw new Error('Hex mode requires complete bytes written as two hexadecimal digits.');
-  const bytes = new Uint8Array(text.length / 2);
-  for (let index = 0; index < bytes.length; index++) bytes[index] = parseInt(text.slice(index * 2, index * 2 + 2), 16);
-  return bytes;
-}
-
+// Function = Count Bytes
 function updateEditorByteCount() {
   let count = selectedFileBytes?.length || 0;
-  if (selectedFileBytes) {
-    try { count = editorBytes().length; } catch {}
+  if (pagedEditor ? editorPageChanged : editorDirty) {
+    try { count = window.EditorBytes.count(myControls.fileEditor.value, myControls.editorMode.value); } catch {}
+  }
+  if (pagedEditor) {
+    const resized = editorPageChanged && count !== editorVisibleLength;
+    editorVisibleLength = count;
+    count += pagedEditor.size - selectedFileBytes.length;
+    if (resized) editorScroller.sync();
   }
   myControls.editorByteCount.textContent = uiText`${count} byte${count === 1 ? '' : 's'}`;
 }
 
-function findSubsequence(haystack, needle, start) {
-  if (!needle.length) return -1;
-  for (let index = start; index <= haystack.length - needle.length; index++) {
-    if (needle.every((byte, offset) => haystack[index + offset] === byte)) return index;
+// Function = Reset Draft
+function resetEditorDraft() {
+  clearTimeout(editorCountTimer);
+  editorCountTimer = null;
+  editorRevision++;
+  editorParsedDraft = null;
+  editorSearchState = null;
+}
+
+// Function = Queue Count
+function queueEditorByteCount() {
+  clearTimeout(editorCountTimer);
+  const revision = editorRevision;
+  editorCountTimer = setTimeout(() => {
+    editorCountTimer = null;
+    if (revision === editorRevision && selectedWorkspaceFile && myControls.fileEditorDialog.open) updateEditorByteCount();
+  }, 100);
+}
+
+// Function = Select Bytes
+function selectEditorBytes(offset, length = 1) {
+  const editor = myControls.fileEditor;
+  const range = window.EditorBytes.byteRange(editor.value, myControls.editorMode.value, offset, length);
+  if (!range) return;
+  editor.focus();
+  editor.setSelectionRange(range.start, range.end);
+  editor.scrollTop = Math.max(0, editor.scrollHeight * (range.start / Math.max(1, editor.value.length)) - 40);
+}
+
+// Function = Find Text
+function findEditorText(text, query, cursor) {
+  const folded = text.toLowerCase();
+  const needle = query.toLowerCase();
+  const expanded = folded.length !== text.length;
+  const from = expanded ? text.slice(0, cursor).toLowerCase().length : cursor;
+  let index = folded.indexOf(needle, from);
+  if (index < 0 && from > 0) index = folded.indexOf(needle);
+  if (index < 0) return null;
+  const end = index + needle.length;
+  if (!expanded) return { start: index, end };
+
+  let original = 0, foldedOffset = 0, start = 0;
+  for (const character of text) {
+    if (foldedOffset <= index) start = original;
+    original += character.length;
+    foldedOffset += character.toLowerCase().length;
+    if (foldedOffset >= end) return { start, end: original };
   }
-  return -1;
+  return null;
 }
 
-function selectEditorLine(line) {
-  const lines = myControls.fileEditor.value.split('\n');
-  const selected = Math.max(0, Math.min(line, lines.length - 1));
-  const start = lines.slice(0, selected).reduce((total, text) => total + text.length + 1, 0);
-  myControls.fileEditor.focus();
-  myControls.fileEditor.setSelectionRange(start, start + lines[selected].length);
-  myControls.fileEditor.scrollTop = Math.max(0, myControls.fileEditor.scrollHeight * (selected / lines.length) - 40);
+// Function = Search Bytes
+function editorSearchBytes(query) {
+  const compact = query.replace(/\s+/g, '');
+  if (compact.length % 2 === 0 && /^[0-9a-f]+$/i.test(compact)) {
+    const needle = new Uint8Array(compact.length / 2);
+    for (let index = 0; index < needle.length; index++) needle[index] = parseInt(compact.slice(index * 2, index * 2 + 2), 16);
+    return needle;
+  }
+  return new TextEncoder().encode(query);
 }
 
+// Function = Find Match
 function findInEditor() {
   if (!selectedFileBytes) return;
   const query = myControls.editorSearch.value;
   if (!query) return;
+  if (pagedEditor) return navigateInEditor(() => findInPages(query));
   if (myControls.editorMode.value === 'text') {
-    const haystack = myControls.fileEditor.value.toLowerCase();
-    const needle = query.toLowerCase();
-    let index = haystack.indexOf(needle, myControls.fileEditor.selectionEnd);
-    if (index < 0) index = haystack.indexOf(needle);
-    if (index < 0) {
-      myStatus(uiText`Could not find ${query}.`);
-      return;
-    }
-    myControls.fileEditor.focus();
-    myControls.fileEditor.setSelectionRange(index, index + query.length);
+    const editor = myControls.fileEditor;
+    const match = findEditorText(editor.value, query, editor.selectionEnd);
+    if (!match) { myStatus(uiText`Could not find ${query}.`); return; }
+    editor.focus();
+    editor.setSelectionRange(match.start, match.end);
     return;
   }
-  let needle;
-  const compact = query.replace(/\s+/g, '');
-  if (compact.length % 2 === 0 && /^[0-9a-f]+$/i.test(compact)) {
-    needle = new Uint8Array(compact.length / 2);
-    for (let index = 0; index < needle.length; index++) needle[index] = parseInt(compact.slice(index * 2, index * 2 + 2), 16);
-  } else {
-    needle = new TextEncoder().encode(query);
-  }
-  let index = findSubsequence(selectedFileBytes, needle, 0);
-  if (index < 0) index = findSubsequence(selectedFileBytes, needle, 0);
+  const needle = editorSearchBytes(query);
+  try {
+    if (editorParsedDraft?.revision !== editorRevision) editorParsedDraft = { revision: editorRevision, bytes: editorBytes() };
+  } catch (error) { myStatus(error.message); return; }
+  const start = editorSearchState?.query === query && editorSearchState.revision === editorRevision ? editorSearchState.next : 0;
+  const index = window.EditorBytes.find(editorParsedDraft.bytes, needle, start);
   if (index < 0) {
     myStatus(uiText`Could not find ${query}.`);
     return;
   }
-  selectEditorLine(Math.floor(index / 16));
+  editorSearchState = { query, revision: editorRevision, next: index + 1 };
+  selectEditorBytes(index, needle.length);
   myStatus(uiText`Found ${query} at 0x${index.toString(16)}.`);
 }
 
+// Function = Focus Match
+async function navigateInEditor(action) {
+  if (await runMyOperation(action)) myControls.fileEditor.focus({ preventScroll: true });
+}
+
+// Function = Find Across Pages
+async function findInPages(query) {
+  stageEditorPage();
+  const mode = myControls.editorMode.value;
+  const editor = myControls.fileEditor;
+  let start = editorPageStart;
+  if (editorSearchState?.query === query && editorSearchState.revision === editorRevision) start = editorSearchState.next;
+  else if (mode === 'text') start += new TextEncoder().encode(editor.value.slice(0, editor.selectionEnd)).length;
+  myStatus(uiText('Searching file…'));
+  let match;
+  if (mode === 'text') match = await pagedEditor.findText(query, start);
+  else {
+    const needle = editorSearchBytes(query);
+    const offset = await pagedEditor.find(needle, start);
+    if (offset >= 0) match = { offset, length: needle.length };
+  }
+  if (!match) { myStatus(uiText`Could not find ${query}.`); return; }
+  await showEditorPage(match.offset, mode, match.length);
+  const localOffset = match.offset - editorPageStart;
+  selectEditorBytes(localOffset, Math.min(match.length, selectedFileBytes.length - localOffset));
+  editorScroller.reveal(match.offset);
+  editorSearchState = { query, revision: editorRevision, next: match.offset + (mode === 'text' ? match.length : 1) };
+  myStatus(uiText`Found ${query} at 0x${match.offset.toString(16)}.`);
+  return true;
+}
+
+// Function = Jump Offset
 function goToEditorOffset() {
   if (!selectedFileBytes) return;
   const value = myControls.editorOffset.value.trim();
@@ -789,52 +1067,156 @@ function goToEditorOffset() {
     myStatus(uiText('Enter a hexadecimal offset, for example 1b8.'));
     return;
   }
-  const offset = Math.min(parseInt(value, 16), Math.max(0, selectedFileBytes.length - 1));
-  selectEditorLine(Math.floor(offset / 16));
+  if (pagedEditor) return navigateInEditor(async () => {
+    stageEditorPage();
+    if (!pagedEditor.size) { myStatus(uiText('The edited file is empty.')); return; }
+    const offset = Math.min(parseInt(value, 16), pagedEditor.size - 1);
+    await showEditorPage(offset);
+    selectEditorBytes(offset - editorPageStart);
+    editorScroller.reveal(offset);
+    myStatus(uiText`Moved to offset 0x${offset.toString(16)}.`);
+    return true;
+  });
+  let length;
+  try { length = window.EditorBytes.count(myControls.fileEditor.value, myControls.editorMode.value); }
+  catch (error) { myStatus(error.message); return; }
+  if (!length) { myStatus(uiText('The edited file is empty.')); return; }
+  const offset = Math.min(parseInt(value, 16), length - 1);
+  selectEditorBytes(offset);
   myStatus(uiText`Moved to offset 0x${offset.toString(16)}.`);
 }
 
-function renderEditor() {
-  if (!selectedWorkspaceFile || selectedFileBytes === null) {
-    myControls.fileEditorPanel.hidden = true;
-    return;
-  }
+// Function = Show Draft
+function renderEditor(draft, mode, dirty) {
   myControls.fileEditorPanel.hidden = false;
+  openSaveDialog(myControls.fileEditorDialog);
   myControls.editorFileName.textContent = selectedWorkspaceFile.path;
-  myControls.fileEditor.value = myControls.editorMode.value === 'hex'
-    ? bytesToHex(selectedFileBytes)
-    : new TextDecoder().decode(selectedFileBytes);
-  editorDirty = false;
-  myControls.saveFileBtn.textContent = uiText('Save changes');
-  myControls.editorHint.textContent = myControls.editorMode.value === 'hex'
-    ? uiText('Offsets and hex bytes are on the left; UTF-8 text is on the right. Search or jump to an offset.')
+  myControls.editorMode.value = mode;
+  myControls.fileEditor.value = draft;
+  myControls.editorScroll.hidden = !pagedEditor;
+  myControls.editorScroll.parentElement.classList.toggle('virtual-scroll', Boolean(pagedEditor));
+  myControls.fileEditor.wrap = pagedEditor && mode === 'hex' ? 'off' : 'soft';
+  editorPageChanged = false;
+  resetEditorDraft();
+  editorDirty = dirty;
+  myControls.saveFileBtn.textContent = dirty ? uiText('Save changes *') : uiText('Save changes');
+  myControls.editorHint.textContent = mode === 'hex'
+    ? uiText('Offsets and hex bytes are on the left. The ASCII preview is on the right.')
     : uiText('Edit text directly. Switch to hex mode for byte-level editing.');
   updateEditorByteCount();
   updateMyFileActions();
 }
 
 async function openWorkspaceFile(file) {
+  if (file.readOnly) { myStatus(uiText('chives.json is read-only.')); return; }
   if (editorDirty && !await confirmSaveAction('Discard unsaved changes to this file?')) return;
-  selectedWorkspaceFile = file;
-  selectedFileBytes = null;
-  myControls.fileEditorPanel.hidden = true;
-  await readEditorFile(decryptedWorkspace, file.path);
+  const opener = [...myControls.workspaceFiles.querySelectorAll('tr[data-file-path]')].find(row => row.dataset.filePath === file.path) || document.activeElement;
+  await readEditorFile(decryptedWorkspace, file.path, file);
+  selectedWorkspacePath = file.path;
+  editorOpener = opener;
+  myControls.editorStatus.textContent = '';
   renderWorkspace();
 }
 
-// Function Read Editor
-async function readEditorFile(root, path) {
-  const result = await window.saveEditor.read({ root, path });
-  selectedFileBytes = Uint8Array.from(atob(result.data), character => character.charCodeAt(0));
-  if ([...selectedFileBytes.slice(0, 256)].includes(0)) myControls.editorMode.value = 'hex';
-  renderEditor();
+// Function = Read Editor
+async function readEditorFile(root, path, file = selectedWorkspaceFile, offset = 0, mode = 'hex') {
+  let model = null, start = 0, bytes;
+  if (file.size <= PAGED_EDITOR_THRESHOLD) {
+    const result = await window.saveEditor.read({ root, path });
+    if (!result.paged) bytes = window.EditorBytes.fromBase64(result.data);
+  }
+  if (!bytes) {
+    model = await window.PagedEditor.open(range => window.saveEditor.readPage({ root, path, ...range }));
+    if (mode === 'text') await model.validateText();
+    ({ start, bytes } = await model.windowAt(offset, mode));
+  }
+  const draft = mode === 'text' ? losslessEditorText(bytes) : bytesToHex(bytes, start);
+  editorScroller?.reset();
+  selectedWorkspaceFile = file;
+  pagedEditor = model;
+  editorPageStart = start;
+  selectedFileBytes = bytes;
+  renderEditor(draft, mode, false);
+  if (pagedEditor) { editorScroller.sync(); editorScroller.reveal(offset); }
 }
 
-// Function Replace File
+// Function = Keep Page Edits
+function stageEditorPage(mode = myControls.editorMode.value) {
+  if (!editorPageChanged) return;
+  const bytes = editorBytes(mode);
+  pagedEditor.replace(editorPageStart, selectedFileBytes.length, bytes);
+  selectedFileBytes = bytes;
+  editorVisibleLength = bytes.length;
+  editorPageChanged = false;
+}
+
+// Function = Display Page
+async function showEditorPage(offset, mode = myControls.editorMode.value, span = 1, canRender) {
+  const model = pagedEditor;
+  const page = await model.windowAt(offset, mode, span);
+  if (pagedEditor !== model || (canRender && !canRender())) return false;
+  const draft = mode === 'text' ? losslessEditorText(page.bytes) : bytesToHex(page.bytes, page.start);
+  editorPageStart = page.start;
+  selectedFileBytes = page.bytes;
+  renderEditor(draft, mode, pagedEditor.dirty);
+  return true;
+}
+
+// Function = Scroll File
+async function scrollEditorTo(offset) {
+  if (!pagedEditor || saveControlsBlocked()) return false;
+  const operation = myOperationSequence, revision = editorRevision;
+  stageEditorPage();
+  return showEditorPage(offset, myControls.editorMode.value, 1,
+    () => operation === myOperationSequence && revision === editorRevision && !saveControlsBlocked());
+}
+
+// Function = Editor Closing
+function hideEditorWindow() {
+  resetEditorDraft();
+  editorScroller?.reset();
+  closeSaveDialog(myControls.fileEditorDialog);
+  closeExportMenu();
+  myControls.fileEditorPanel.hidden = true;
+  myControls.fileEditor.value = '';
+  selectedWorkspaceFile = null;
+  selectedFileBytes = null;
+  pagedEditor = null;
+  editorPageStart = 0;
+  editorPageChanged = false;
+  editorDirty = false;
+  const opener = editorOpener;
+  editorOpener = null;
+  if (opener?.isConnected && !opener.hidden) opener.focus();
+}
+
+async function closeFileEditor() {
+  if (editorDirty && !await confirmSaveAction('Discard unsaved changes to this file?')) return;
+  hideEditorWindow();
+}
+
+myControls.closeFileEditorBtn.addEventListener('click', () => runMyOperation(closeFileEditor));
+// Function = Dismiss Editor
+function dismissFileEditor(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (!myControls.fileMoreOptions.hidden) {
+    closeExportMenu();
+    myControls.fileMoreBtn.focus();
+    return;
+  }
+  void runMyOperation(closeFileEditor);
+}
+myControls.fileEditorDialog.addEventListener('cancel', dismissFileEditor);
+myControls.fileEditorDialog.addEventListener('keydown', event => {
+  if (event.key === 'Escape') dismissFileEditor(event);
+});
+
+// Function = Replace File
 async function replaceWorkspaceFile(file) {
   const root = decryptedWorkspace;
   const current = workspaceDetails?.files.find(candidate => candidate.path === file.path);
-  if (!root || !current || typeof window.saveEditor.replace !== 'function') return;
+  if (!root || !current || current.readOnly || typeof window.saveEditor.replace !== 'function') return;
   const path = current.path;
   const replacingEditor = selectedWorkspaceFile?.path === path;
   if (replacingEditor && editorDirty
@@ -845,20 +1227,16 @@ async function replaceWorkspaceFile(file) {
   workspaceModified = true;
   let editorNotice = '';
   if (replacingEditor) {
-    selectedWorkspaceFile = result.files.find(candidate => candidate.path === path) || null;
-    selectedFileBytes = null;
-    editorDirty = false;
-    myControls.fileEditorPanel.hidden = true;
-    if (selectedWorkspaceFile && selectedWorkspaceFile.size <= MAX_EDITOR_FILE_BYTES) {
+    const replacement = result.files.find(candidate => candidate.path === path);
+    if (replacement) {
       try {
-        await readEditorFile(root, path);
+        await readEditorFile(root, path, replacement);
       } catch (error) {
+        hideEditorWindow();
         editorNotice = ' Select the file again to retry opening it.';
         myLog(uiText`Replaced ${path}, but could not open it in the editor: ${error.message}`);
       }
-    } else if (selectedWorkspaceFile) {
-      editorNotice = ' This file is larger than 8 MiB; export it to edit with another application.';
-    }
+    } else hideEditorWindow();
   } else if (selectedWorkspaceFile) {
     selectedWorkspaceFile = result.files.find(candidate => candidate.path === selectedWorkspaceFile.path) || selectedWorkspaceFile;
   }
@@ -867,18 +1245,18 @@ async function replaceWorkspaceFile(file) {
   myLog(uiText`Replaced ${path} in the decrypted workspace.`);
 }
 
-// Function Export File
+// Function = Export File
 async function exportWorkspaceFile(file) {
   if (!decryptedWorkspace || !workspaceDetails?.files.some(candidate => candidate.path === file.path)) return;
   const destination = await window.saveEditor.downloadFile({ root: decryptedWorkspace, path: file.path });
   if (destination) myStatus(uiText`File exported to ${destination}`);
 }
 
-// Function Delete File
+// Function = Delete File
 async function deleteWorkspaceFile(file) {
   const root = decryptedWorkspace;
   const current = workspaceDetails?.files.find(candidate => candidate.path === file.path);
-  if (!root || !current || current.protected) return;
+  if (!root || !current || current.protected || current.readOnly) return;
   if (!await confirmSaveAction(`Delete ${current.path} from the decrypted workspace?`)) return;
   const result = await window.saveEditor.delete({ root, path: current.path });
   if (!result || root !== decryptedWorkspace) return;
@@ -886,10 +1264,7 @@ async function deleteWorkspaceFile(file) {
   workspaceModified = true;
   myLog(uiText`Deleted ${current.path} from the decrypted workspace.`);
   if (selectedWorkspaceFile?.path === current.path) {
-    selectedWorkspaceFile = null;
-    selectedFileBytes = null;
-    editorDirty = false;
-    myControls.fileEditorPanel.hidden = true;
+    hideEditorWindow();
   }
   renderWorkspace();
 }
@@ -902,15 +1277,18 @@ async function closeMyWorkspace(confirmed = false) {
   decryptedWorkspace = null;
   decryptedArchive = null;
   workspaceDetails = null;
+  hideEditorWindow();
+  closeReRegion();
+  selectedWorkspacePath = '';
+  myControls.targetTitleId.value = '';
   workspaceTree?.reset();
   accountWorkspace = null;
-  selectedWorkspaceFile = null;
-  selectedFileBytes = null;
-  editorDirty = false;
   workspaceModified = false;
-  myControls.workspacePanel.hidden = true;
+  renderWorkspace();
   myControls.encryptPanel.hidden = true;
   savedAccounts?.setCurrentAccount('');
+  myControls.workspaceAccountId.hidden = false;
+  myControls.workspaceBatchAccountId.hidden = true;
   goToLibraryStep(selectedLocalSave ? 1 : 0);
   myStatus(uiText('Decrypted files closed. Your original save is still selected.'));
   void releaseSaveTemporary(temporaryId);
@@ -938,9 +1316,10 @@ async function decryptInputs(inputs, { external = false } = {}) {
   decryptedWorkspace = result.workspace;
   decryptedArchive = result.archivePath;
   workspaceDetails = result.info;
-  selectedWorkspaceFile = null;
-  selectedFileBytes = null;
-  editorDirty = false;
+  hideEditorWindow();
+  closeReRegion();
+  selectedWorkspacePath = '';
+  myControls.targetTitleId.value = '';
   workspaceModified = false;
   renderWorkspace();
   myStatus(uiText('Your save is decrypted. Select a file to edit, or export the decrypted ZIP.'));
@@ -959,7 +1338,7 @@ myControls.decryptExternalBtn.addEventListener('click', () => runMyOperation(asy
   await decryptInputs(inputs, { external: true });
 }));
 
-// Function Save ZIP Drop
+// Function = Save ZIP Drop
 {
   const zone = document.getElementById('decryptExternalDropZone');
   let dragDepth = 0;
@@ -1045,7 +1424,17 @@ myControls.mySaveDecryptBtn.addEventListener('click', () => runMyOperation(async
 }));
 
 async function uploadCurrentSave() {
+  if (workspaceSaves().length) {
+    myStatus(uiText('Extract the encrypted batch ZIP and add its saves to Local files before uploading.'));
+    return;
+  }
   if (accountClosing || !selectedLocalSave) return;
+  const targetTitle = myControls.targetTitleId.value.trim().toUpperCase();
+  const sourceTitle = String(workspaceDetails?.titleId || selectedLocalSave.entry.title || '').toUpperCase();
+  if (!controls.useRemoteOracle.checked && targetTitle && targetTitle !== sourceTitle) {
+    myStatus(uiText('Export the encrypted PPSA copy and add it under its target PPSA before uploading.'));
+    return;
+  }
   let selection;
   if (selectedLocalSave.entry.localSource === 'pc') {
     const prepared = await runMyOperation(() => window.saveTransfer.prepareLocalPcUpload({ entryId: selectedLocalSave.entry.id }));
@@ -1128,22 +1517,30 @@ myControls.mySaveResignBtn.addEventListener('click', () => {
 myControls.confirmResignBtn.addEventListener('click', () => runMyOperation(async () => {
   if (!selectedLocalSave) return;
   await savedAccounts?.waitForChanges();
-  if (savedAccounts?.isUsingCurrent()) {
+  const targetTitleId = selectedTargetTitleId(selectedLocalSave.entry.title);
+  const useCurrent = savedAccounts?.isUsingCurrent();
+  if (useCurrent && !targetTitleId) {
     myStatus(uiText('Uncheck Use current ID and choose a target account before resigning.'));
     return;
   }
-  const accountId = savedAccounts?.getTargetId(myControls.resignAccountId.value.trim()) || myControls.resignAccountId.value.trim();
+  if (useCurrent && (!decryptedWorkspace || !workspaceDetails?.accountId)) {
+    myStatus(uiText('Decrypt this save first to read its current Account ID, or select a target account.'));
+    return;
+  }
+  const accountId = useCurrent ? workspaceDetails.accountId
+    : savedAccounts?.getTargetId(myControls.resignAccountId.value.trim()) || myControls.resignAccountId.value.trim();
   if (!/^[0-9a-f]{16}$/i.test(accountId)) {
     myStatus(uiText('Enter a 16-digit hexadecimal account ID before resigning.'));
     return;
   }
-  const output = await window.saveEditor.chooseOutput(`${selectedLocalSave.file.file}-resigned.zip`);
+  const output = await window.saveEditor.chooseOutput(`${targetTitleId ? `${targetTitleId}-` : ''}${selectedLocalSave.file.file}-resigned.zip`);
   if (!output) return;
   const inputs = await window.saveEditor.localFile(localSaveOptions());
   myStatus(uiText('Resigning your save…'));
   const result = await window.saveEditor.run({
     operation: 'resign', inputs, accountId, output, platform: 'ps5',
     ...saveJobOptions(),
+    ...(targetTitleId ? { targetTitleId } : {}),
   });
   if (result) {
     myControls.resignPanel.hidden = true;
@@ -1172,16 +1569,25 @@ myControls.addFilesBtn.addEventListener('click', () => runMyOperation(async () =
 myControls.encryptSaveBtn.addEventListener('click', () => runMyOperation(encryptWorkspace));
 
 async function encryptWorkspace() {
-  if (!decryptedWorkspace) return null;
+  if (!decryptedWorkspace || workspaceDetails?.batchError) return null;
   await savedAccounts?.waitForChanges();
+  const saves = workspaceSaves();
+  const batch = saves.length > 1;
+  if (batch && controls.useRemoteOracle.checked) {
+    myStatus(uiText('Use the local worker to encrypt a batch of decrypted saves.'));
+    return null;
+  }
+  const targetTitleId = selectedTargetTitleId(workspaceDetails?.titleId || selectedLocalSave?.entry.title, saves);
+  const useCurrentAccount = Boolean(savedAccounts?.isUsingCurrent());
   const accountId = savedAccounts?.getTargetId(myControls.encryptAccountId.value.trim()) || myControls.encryptAccountId.value.trim();
-  if (!/^[0-9a-f]{16}$/i.test(accountId)) {
+  if (!(batch && useCurrentAccount) && !/^[0-9a-f]{16}$/i.test(accountId)) {
     myStatus(uiText('Enter a 16-digit hexadecimal account ID before encrypting.'));
     return null;
   }
-  myStatus(uiText('Encrypting your edited save…'));
+  myStatus(batch ? uiText`Encrypting ${saves.length} saves…` : uiText('Encrypting your edited save…'));
   let result;
-  if (selectedLocalSave) {
+  const replaceOriginal = Boolean(selectedLocalSave && !targetTitleId && !batch);
+  if (replaceOriginal) {
     if (!await confirmSaveAction(`Replace ${selectedLocalSave.file.file} with your edited save? A backup will be created first.`)) return null;
     const pc = selectedLocalSave.entry.localSource === 'pc';
     const selection = localSaveOptions();
@@ -1189,6 +1595,7 @@ async function encryptWorkspace() {
     result = await window.saveEditor.encryptLocal({
       workspace: decryptedWorkspace, accountId, platform: 'ps5',
       ...saveJobOptions(),
+      useCurrentAccount,
     });
     if (!result) return null;
     try {
@@ -1201,20 +1608,26 @@ async function encryptWorkspace() {
       if (backup) myLog(uiText`Backup: ${backup}`);
     } finally { await releaseSaveTemporary(result.temporaryId); }
   } else {
-    const output = await window.saveEditor.chooseOutput(`${workspaceDetails.titleId || 'save'}-encrypted.zip`);
+    const output = await window.saveEditor.chooseOutput(batch
+      ? `${targetTitleId ? `${targetTitleId}-` : ''}${saves.length}-saves-encrypted.zip`
+      : `${targetTitleId || workspaceDetails.titleId || 'save'}-encrypted.zip`);
     if (!output) return null;
     result = await window.saveEditor.run({
       operation: 'encrypt', workspace: decryptedWorkspace, accountId, output, platform: 'ps5',
       ...saveJobOptions(),
+      useCurrentAccount,
+      ...(targetTitleId ? { targetTitleId } : {}),
     });
   }
   if (result) {
     workspaceModified = false;
     myControls.encryptPanel.hidden = true;
-    myStatus(selectedLocalSave
+    myStatus(replaceOriginal
       ? uiText`${selectedLocalSave.file.file} was replaced with your edited save. A backup is available.`
+      : batch ? uiText`${saves.length} encrypted saves exported to ${result.output}. Extract the ZIP and add its saves to Local files to upload.`
+      : targetTitleId ? uiText`Encrypted save for ${targetTitleId} exported to ${result.output}. Add it under ${targetTitleId} to upload.`
       : uiText`Encrypted save exported to ${result.output}`);
-    myLog(selectedLocalSave ? uiText`Encrypted save updated: ${selectedLocalSave.file.file}` : uiText`Encrypted copy: ${result.output}`);
+    myLog(replaceOriginal ? uiText`Encrypted save updated: ${selectedLocalSave.file.file}` : uiText`Encrypted copy: ${result.output}`);
   }
   return result;
 }
@@ -1224,22 +1637,42 @@ myControls.confirmEncryptBtn.addEventListener('click', () => runMyOperation(encr
 myControls.closeWorkspaceBtn.addEventListener('click', () => runMyOperation(() => closeMyWorkspace()));
 myControls.editorMode.addEventListener('change', () => {
   if (!selectedFileBytes) return;
-  const previousMode = myControls.editorMode.value === 'hex' ? 'text' : 'hex';
+  const mode = myControls.editorMode.value;
+  const previousMode = mode === 'hex' ? 'text' : 'hex';
+  if (pagedEditor) {
+    myControls.editorMode.value = previousMode;
+    const offset = editorScroller.offset();
+    return runMyOperation(async () => {
+      stageEditorPage(previousMode);
+      if (mode === 'text') {
+        myStatus(uiText('Checking text conversion…'));
+        try { await pagedEditor.validateText(); }
+        catch (error) {
+          myStatus(error.message === 'Cant be converted to text mode' ? uiText('Cant be converted to text mode') : error.message);
+          return;
+        }
+      }
+      await showEditorPage(offset, mode);
+      editorScroller.sync();
+      editorScroller.reveal(offset);
+      myControls.editorStatus.textContent = '';
+    });
+  }
   try {
-    if (editorDirty) {
-      selectedFileBytes = editorBytes();
-      editorDirty = false;
-    }
-    renderEditor();
+    const bytes = editorDirty ? editorBytes(previousMode) : selectedFileBytes;
+    const draft = mode === 'hex' ? bytesToHex(bytes) : losslessEditorText(bytes);
+    renderEditor(draft, mode, editorDirty);
+    myControls.editorStatus.textContent = '';
   } catch (error) {
     myControls.editorMode.value = previousMode;
-    myStatus(error.message);
+    myStatus(mode === 'text' ? uiText('Cant be converted to text mode') : error.message);
   }
 });
 myControls.editorFindNext.addEventListener('click', findInEditor);
 myControls.editorSearch.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') findInEditor();
 });
+myControls.editorSearch.addEventListener('input', () => { editorSearchState = null; });
 myControls.editorGoOffset.addEventListener('click', goToEditorOffset);
 myControls.editorOffset.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') goToEditorOffset();
@@ -1247,33 +1680,64 @@ myControls.editorOffset.addEventListener('keydown', (event) => {
 myControls.editorRevert.addEventListener('click', () => runMyOperation(async () => {
   if (selectedWorkspaceFile) await openWorkspaceFile(selectedWorkspaceFile);
 }));
-myControls.fileEditor.addEventListener('input', () => {
-  editorDirty = true;
-  myControls.saveFileBtn.textContent = uiText('Save changes *');
-  updateEditorByteCount();
+myControls.fileEditor.addEventListener('keydown', event => {
+  if (pagedEditor && !event.defaultPrevented && !event.altKey && !event.shiftKey
+      && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+    myStatus(uiText('Selected the loaded section. Use Export file for the entire file.'));
+  }
 });
-async function saveCurrentEditorFile() {
-  if (!selectedWorkspaceFile || selectedFileBytes === null) return false;
-  const bytes = editorBytes();
-  const binary = Array.from(bytes, (byte) => String.fromCharCode(byte)).join('');
-  workspaceDetails = await window.saveEditor.write({
-    root: decryptedWorkspace,
-    path: selectedWorkspaceFile.path,
-    data: btoa(binary),
-  });
-  selectedFileBytes = bytes;
-  editorDirty = false;
+myControls.fileEditor.addEventListener('input', () => {
+  resetEditorDraft();
+  editorDirty = true;
+  editorPageChanged = Boolean(pagedEditor);
+  if (pagedEditor) editorScroller.pause();
+  myControls.saveFileBtn.textContent = uiText('Save changes *');
+  queueEditorByteCount();
+});
+async function saveCurrentEditorFile(keepOpen = true) {
+  if (!selectedWorkspaceFile || selectedWorkspaceFile.readOnly || selectedFileBytes === null) return false;
+  if (!editorDirty) return true;
+  const root = decryptedWorkspace, path = selectedWorkspaceFile.path;
+  const offset = pagedEditor && keepOpen ? editorScroller.offset() : 0;
+  if (pagedEditor) {
+    stageEditorPage();
+    if (pagedEditor.dirty) {
+      workspaceDetails = await window.saveEditor.writePages({ root, path, version: pagedEditor.version, edits: pagedEditor.edits() });
+    }
+  } else {
+    const bytes = editorBytes();
+    workspaceDetails = await window.saveEditor.write({ root, path, data: window.EditorBytes.toBase64(bytes) });
+    selectedFileBytes = bytes;
+  }
+  selectedWorkspaceFile = workspaceDetails.files.find(file => file.path === path) || selectedWorkspaceFile;
   workspaceModified = true;
+  resetEditorDraft();
+  editorDirty = false;
+  if (keepOpen && (pagedEditor || selectedFileBytes.length > PAGED_EDITOR_THRESHOLD)) {
+    try {
+      await readEditorFile(root, path, selectedWorkspaceFile, offset, myControls.editorMode.value);
+    } catch (error) {
+      hideEditorWindow();
+      renderWorkspace();
+      throw new Error(uiText`Saved ${path}, but could not reopen it: ${error.message}`);
+    }
+  }
+  if (keepOpen) updateEditorByteCount();
   myControls.saveFileBtn.textContent = uiText('Save changes');
   renderWorkspace();
   return true;
 }
 
 myControls.saveFileBtn.addEventListener('click', () => runMyOperation(async () => {
+  if (!editorDirty) { myStatus(uiText('No changes to save.')); return; }
   if (await saveCurrentEditorFile()) myStatus(uiText`${selectedWorkspaceFile.path} updated in the decrypted workspace.`);
 }));
 myControls.saveEncryptFileBtn.addEventListener('click', () => runMyOperation(async () => {
-  if (await saveCurrentEditorFile()) await encryptWorkspace();
+  if (workspaceDetails?.batchError) return;
+  if (await saveCurrentEditorFile(false)) {
+    hideEditorWindow();
+    await encryptWorkspace();
+  }
 }));
 myControls.downloadFileBtn.addEventListener('click', () => runMyOperation(async () => {
   if (!selectedWorkspaceFile) return;

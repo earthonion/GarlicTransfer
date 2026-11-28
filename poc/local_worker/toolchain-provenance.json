@@ -105,5 +105,22 @@
       ".symtab"
     ],
     "compatibility_hypothesis": "Reduced non-runtime trailing metadata may help loaders that stop reading after load segments; this is not a confirmed cause of the reported timeout."
+  },
+  "current_build": {
+    "binary_sha256": "16afabc222e24362ec47b95560c6b39c2bd242285cb6a662ecd57c91a5e6efac",
+    "binary_bytes": 230672,
+    "sdk_version": "v0.50",
+    "sdk_archive_sha256": "2993a69e52fea04a32bf1753318fc60b3f918ab635bdf946870e7d1849557bb2",
+    "compiler": "Debian Clang/LLVM 19.1.7 (3+b1)",
+    "source_base_commit": "58d0388",
+    "process_name": "GarlicWorker.elf",
+    "capabilities": [
+      "target_title_id",
+      "shutdown"
+    ],
+    "repeat_build_byte_identical": true,
+    "historical_test2_strip": "The earlier strip-only evidence below describes its recorded candidate SHA256, not this functional update.",
+    "shutdown_control_port": 9024,
+    "shutdown_protocol": "garlic-local-control-v1"
   }
 }

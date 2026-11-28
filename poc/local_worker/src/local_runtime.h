@@ -4,6 +4,7 @@
 #include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "local_shutdown.h"
 
 #define LOCAL_SAVE_PORT 9023
 #define LOCAL_PPR_PORT 9022

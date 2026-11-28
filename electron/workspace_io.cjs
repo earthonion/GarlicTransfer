@@ -4,10 +4,34 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 
+// Function = Protect Metadata
+function isReadOnlyFile(filename) {
+  return /^chives\.json[. ]*$/i.test(path.win32.basename(filename));
+}
+
+function requireWritableFile(filename) {
+  if (isReadOnlyFile(filename)) throw new Error('chives.json is read-only.');
+}
+
 // Function Replacement Path
 function insideWorkspace(root, selected) {
   const relative = path.relative(root, selected);
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+// Function = Check Export
+async function checkExportDestination(destination, workspace) {
+  let target;
+  try {
+    target = await fs.realpath(destination);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    if (!isReadOnlyFile(destination)) return;
+    target = path.join(await fs.realpath(path.dirname(destination)), path.basename(destination));
+  }
+  if (isReadOnlyFile(target) && (!workspace || insideWorkspace(await fs.realpath(workspace), target))) {
+    requireWritableFile(target);
+  }
 }
 
 // Function Replacement Identity
@@ -29,6 +53,7 @@ async function prepareWorkspaceReplacement(root, relative) {
   if (path.win32.parse(relative).root || parts.some(part => !part || part === '.' || part === '..' || part.includes(':'))) {
     throw new Error('the selected path is outside the save workspace');
   }
+  requireWritableFile(relative);
   const base = path.resolve(root);
   const rootStat = await fs.lstat(base, { bigint: true });
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('the save workspace is not a regular folder');
@@ -68,6 +93,7 @@ async function checkReplacementFolders(target) {
 
 // Function Replacement Check
 async function checkWorkspaceReplacement(target) {
+  requireWritableFile(target.selected);
   await checkReplacementFolders(target);
   const stat = await fs.lstat(target.requested, { bigint: true });
   const canonical = await fs.realpath(target.requested);
@@ -200,26 +226,34 @@ async function replaceWorkspaceFile(target, source, complete = () => undefined) 
   }
 }
 
-// Function Workspace Writing
-async function writeEditedFile(selectedPath, data) {
+const activeWrites = new Set();
+
+// Function = Write Edited File
+async function writeEditedFile(selectedPath, data, { beforePublish, mode } = {}) {
   const selected = path.resolve(selectedPath);
+  requireWritableFile(selected);
+  if (activeWrites.has(selected)) throw new Error('a save is already in progress for this file');
   const temporary = path.join(path.dirname(selected), `.garlic-edit-${randomUUID()}.tmp`);
   let handle;
   let owned = false;
   let failure;
+  activeWrites.add(selected);
   try {
-    handle = await fs.open(temporary, 'wx');
+    handle = await fs.open(temporary, 'wx', mode);
     owned = true;
-    await handle.writeFile(data);
+    if (typeof data === 'function') await data(handle);
+    else await handle.writeFile(data);
     await handle.sync();
     await handle.close();
     handle = null;
+    if (beforePublish) await beforePublish(temporary);
     await fs.rename(temporary, selected);
     owned = false;
   } catch (error) {
     failure = error;
     throw error;
   } finally {
+    activeWrites.delete(selected);
     if (handle) await handle.close().catch(error => { failure ||= error; });
     if (owned) {
       try { await fs.rm(temporary, { force: true }); }
@@ -236,6 +270,7 @@ async function addWorkspaceFiles(root, selectedPaths, complete = () => undefined
   const selected = new Set();
   const files = selectedPaths.map(source => {
     const name = path.basename(source);
+    requireWritableFile(name);
     const key = nameKey(name);
     if (selected.has(key)) {
       throw Object.assign(new Error(`More than one selected file is named "${name}".`), { code: 'EEXIST' });
@@ -278,4 +313,7 @@ async function addWorkspaceFiles(root, selectedPaths, complete = () => undefined
   }
 }
 
-module.exports = { writeEditedFile, addWorkspaceFiles, prepareWorkspaceReplacement, replaceWorkspaceFile };
+module.exports = {
+  isReadOnlyFile, requireWritableFile, checkExportDestination,
+  writeEditedFile, addWorkspaceFiles, prepareWorkspaceReplacement, checkWorkspaceReplacement, replaceWorkspaceFile,
+};

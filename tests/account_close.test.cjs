@@ -4,6 +4,12 @@ const { EventEmitter } = require('node:events');
 const { registerAccountClose } = require('../electron/account_close.cjs');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+function gate() {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 // Function Close Fixture
 function fixture(t, options = {}) {
   const app = new EventEmitter(), window = new EventEmitter(), ipcMain = new EventEmitter();
@@ -362,5 +368,63 @@ test('ready and flush IPC reject stale or subframe senders when a current main f
   assert.equal(f.isDestroyed(), false);
   f.ipcMain.emit('accounts:flushed', { sender: f.contents, senderFrame: f.contents.mainFrame }, current, { ok: true });
   await tick();
+  assert.equal(f.isDestroyed(), true);
+});
+
+test('approved close awaits one service shutdown across repeated Close, Quit and navigation', async t => {
+  const stopping = gate();
+  let calls = 0;
+  const f = fixture(t, { beforeClose: async () => { calls++; await stopping.promise; } });
+  f.ready(); f.close();
+  assert.equal(calls, 0);
+  f.reply(); await tick();
+  assert.equal(calls, 1);
+  assert.equal(f.isDestroyed(), false);
+  f.close(); f.app.quit();
+  f.contents.emit('did-start-navigation', {}, 'file:///index.html', false, true);
+  f.contents.emit('render-process-gone');
+  await tick();
+  assert.equal(calls, 1);
+  assert.equal(f.sent.filter(item => item[0] === 'accounts:flush').length, 1);
+  stopping.resolve(); await tick();
+  assert.equal(f.isDestroyed(), true);
+  assert.equal(f.quits(), 2);
+});
+
+test('Keep editing leaves services running while explicit discard shuts them down', async t => {
+  let calls = 0;
+  const f = fixture(t, { beforeClose: async () => { calls++; } });
+  f.ready(); f.close(); f.reply({ ok: false, error: 'Name save failed.' }); await tick();
+  assert.equal(calls, 0);
+  assert.equal(f.isDestroyed(), false);
+  f.dialog.showMessageBox = async () => ({ response: 1 });
+  f.close(); f.reply({ ok: false, error: 'Name save failed.' }); await tick();
+  assert.equal(calls, 1);
+  assert.equal(f.isDestroyed(), true);
+});
+
+test('service shutdown also runs without a ready or surviving renderer', async t => {
+  for (const state of ['startup', 'crashed', 'destroyed']) {
+    const stopping = gate();
+    let calls = 0;
+    const f = fixture(t, { beforeClose: async () => { calls++; await stopping.promise; } });
+    if (state !== 'startup') f.ready();
+    if (state === 'crashed') f.contents.emit('render-process-gone');
+    if (state === 'destroyed') f.destroyContents();
+    assert.equal(f.close().defaultPrevented, true, state);
+    f.close(); await tick();
+    assert.equal(calls, 1, state);
+    assert.equal(f.isDestroyed(), false, state);
+    assert.deepEqual(f.sent, [], state);
+    stopping.resolve(); await tick();
+    assert.equal(f.isDestroyed(), true, state);
+  }
+});
+
+test('a service shutdown failure is reported and does not strand an approved close', async t => {
+  const error = new Error('Local PS5 is unreachable.');
+  const f = fixture(t, { beforeClose: async () => { throw error; } });
+  f.ready(); f.close(); f.reply(); await tick();
+  assert.deepEqual(f.errors, [error]);
   assert.equal(f.isDestroyed(), true);
 });

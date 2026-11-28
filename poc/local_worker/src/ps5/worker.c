@@ -19,6 +19,7 @@
 #include "tcp.h"
 #include "savedata.h"
 #include "sfo_account.h"
+#include "sfo_title.h"
 #include "metadata_layout.h"
 #include "chives_io.h"
 #include "pfs_rebuild.h"
@@ -131,6 +132,13 @@ static int account_id_to_sfo_bytes(const char *hex, uint8_t out[8]) {
     if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) hex += 2;
     if (strlen(hex) != 16) return -1;
     return hex_to_bytes(hex, out, 8) == 8 ? 0 : -1;
+}
+
+/* Function Title Request */
+static int requested_title_id(const char *params, char title[64]) {
+    int length = json_get_string(params, "target_title_id", title, 64);
+    if (length < 0) return strstr(params, "\"target_title_id\"") ? -1 : 0;
+    return !length ? 0 : (sfo_title_valid(title) ? 1 : -1);
 }
 
 static int patch_sfo_account_bytes(uint8_t *sfo, size_t size, const uint8_t account[8]) {
@@ -997,7 +1005,12 @@ static int verify_physical_sfo(const char *image_path, const uint8_t *key,
 static int process_encrypt(worker_config_t *cfg, const char *job_id,
                            const char *params, const char *work_dir,
                            int is_ps4_job) {
-    char savename[256] = {0};
+    char savename[256] = {0}, target_title[64] = {0};
+    int change_title = requested_title_id(params, target_title);
+    if (change_title < 0 || (change_title && is_ps4_job)) {
+        worker_log(cfg, job_id, "ERROR", "Target title must be a PS5 PPSA ID with five digits");
+        return -1;
+    }
     json_get_string(params, "savename", savename, sizeof(savename));
     worker_log(cfg, job_id, "INFO", "Downloading files...");
     if (worker_download_files(cfg, job_id, work_dir, savename, sizeof(savename)) < 0) {
@@ -1030,6 +1043,10 @@ static int process_encrypt(worker_config_t *cfg, const char *job_id,
         worker_logf(cfg, job_id, "INFO", "Using %s container format from save metadata",
                     detected_ps4 ? "PS4" : "PS5");
         is_ps4_job = detected_ps4;
+    }
+    if (change_title && is_ps4_job) {
+        worker_log(cfg, job_id, "ERROR", "Changing the PPSA title is supported only for PS5 saves");
+        return -1;
     }
 
     if (!is_ps4_job) {
@@ -1235,6 +1252,11 @@ static int process_encrypt(worker_config_t *cfg, const char *job_id,
     char uploaded_sfo[MAX_PATH_LEN];
     snprintf(uploaded_sfo, sizeof(uploaded_sfo), "%s/sce_sys/param.sfo", files_dir);
     int upload_zero_sfo = sfo_all_zero_file(uploaded_sfo);
+    if (change_title && upload_zero_sfo) {
+        worker_log(cfg, job_id, "ERROR", "Changing the PPSA title requires a real param.sfo");
+        save_unmount();
+        return -1;
+    }
     if (upload_zero_sfo)
         worker_logf(cfg, job_id, "INFO", "Zeroed SFO detected; cached original SFO length=%u",
                     g_regen_source_sfo_len);
@@ -1288,6 +1310,15 @@ static int process_encrypt(worker_config_t *cfg, const char *job_id,
             return -1;
         }
     }
+    if (change_title && !original_geometry.fs_ext) {
+        char sfo_path[MAX_PATH_LEN];
+        snprintf(sfo_path, sizeof(sfo_path), "%s/sce_sys/param.sfo", mnt);
+        if (sfo_title_patch_file(sfo_path, target_title) < 0) {
+            worker_log(cfg, job_id, "ERROR", "Cannot validate and update the PPSA fields in param.sfo");
+            save_unmount();
+            return -1;
+        }
+    }
 
     /* PS5: capture the final SFO (with any account patch) for the blob */
     uint8_t enc_sfo[0x8000];
@@ -1297,6 +1328,11 @@ static int process_encrypt(worker_config_t *cfg, const char *job_id,
         enc_sfo_len = cow_sfo_len;
         if (patch_account && patch_sfo_account_bytes(enc_sfo, enc_sfo_len, new_aid) < 0) {
             worker_log(cfg, job_id, "ERROR", "Failed to write and verify Account ID in param.sfo");
+            save_unmount();
+            return -1;
+        }
+        if (change_title && sfo_title_patch_bytes(enc_sfo, enc_sfo_len, target_title) < 0) {
+            worker_log(cfg, job_id, "ERROR", "Cannot validate and update the PPSA fields in param.sfo");
             save_unmount();
             return -1;
         }
@@ -1310,6 +1346,12 @@ static int process_encrypt(worker_config_t *cfg, const char *job_id,
             if (rn > 0 && sfo_bytes_valid(enc_sfo, (size_t)rn))
                 enc_sfo_len = (uint32_t)rn;
         }
+    }
+
+    if (change_title && !enc_sfo_len) {
+        worker_log(cfg, job_id, "ERROR", "Cannot read the complete param.sfo for the PPSA change");
+        save_unmount();
+        return -1;
     }
 
     if (save_unmount() < 0) {
@@ -1373,6 +1415,8 @@ static int process_encrypt(worker_config_t *cfg, const char *job_id,
         unlink(saved_sidecar);
     }
 
+    if (change_title) worker_logf(cfg, job_id, "INFO", "Updated param.sfo title references to %s", target_title);
+
     /* Copy result to result dir and zip */
     char result_dir[MAX_PATH_LEN];
     snprintf(result_dir, sizeof(result_dir), "%s/result", work_dir);
@@ -1422,7 +1466,12 @@ static int process_encrypt(worker_config_t *cfg, const char *job_id,
 static int process_resign(worker_config_t *cfg, const char *job_id,
                           const char *params, const char *work_dir,
                           int is_ps4_job) {
-    char account_id[64] = {0};
+    char account_id[64] = {0}, target_title[64] = {0};
+    int change_title = requested_title_id(params, target_title);
+    if (change_title < 0 || (change_title && is_ps4_job)) {
+        worker_log(cfg, job_id, "ERROR", "Target title must be a PS5 PPSA ID with five digits");
+        return -1;
+    }
     json_get_string(params, "account_id", account_id, sizeof(account_id));
     if (!account_id[0]) {
         worker_log(cfg, job_id, "ERROR", "No account_id provided");
@@ -1472,6 +1521,11 @@ static int process_resign(worker_config_t *cfg, const char *job_id,
 
         /* PS5: capture real SFO from blob before mount */
         int is_ps4_save = detect_is_ps4(data_path);
+        if (change_title && is_ps4_save != 0) {
+            worker_log(cfg, job_id, "ERROR", "Changing the PPSA title requires a recognized PS5 save");
+            unlink(data_path);
+            return -1;
+        }
         if (is_ps4_save <= 0)
             ps5param_capture_for_image(data_path);
 
@@ -1490,8 +1544,14 @@ static int process_resign(worker_config_t *cfg, const char *job_id,
         snprintf(sfo_path, sizeof(sfo_path), "%s/sce_sys/param.sfo",
                  save_get_mount_point());
         if (ps5param_get_cached_sfo_len()) {
-            install_sfo_file(sfo_path, ps5param_get_cached_sfo(),
-                             ps5param_get_cached_sfo_len());
+            int installed = install_sfo_file(sfo_path, ps5param_get_cached_sfo(),
+                                            ps5param_get_cached_sfo_len());
+            if (change_title && installed < 0) {
+                worker_logf(cfg, job_id, "ERROR", "Cannot install the real param.sfo for %s", basename);
+                save_unmount();
+                unlink(data_path);
+                return -1;
+            }
         }
 
         if (patch_sfo_account(sfo_path, new_aid, NULL) < 0) {
@@ -1499,6 +1559,12 @@ static int process_resign(worker_config_t *cfg, const char *job_id,
             save_unmount();
             unlink(data_path);
             continue;
+        }
+        if (change_title && sfo_title_patch_file(sfo_path, target_title) < 0) {
+            worker_logf(cfg, job_id, "ERROR", "Cannot validate and update PPSA fields for %s", basename);
+            save_unmount();
+            unlink(data_path);
+            return -1;
         }
 
         /* PS5: read back the patched SFO for the blob write-back */
@@ -1569,6 +1635,10 @@ static int process_resign(worker_config_t *cfg, const char *job_id,
         processed++;
     }
 
+    if (change_title && processed != save_count) {
+        worker_log(cfg, job_id, "ERROR", "Not every save could be retitled; no result was published");
+        return -1;
+    }
     if (processed == 0) {
         worker_log(cfg, job_id, "ERROR", "No saves could be resigned");
         return -1;

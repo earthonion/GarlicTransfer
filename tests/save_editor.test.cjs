@@ -6,10 +6,13 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const { makeSfo } = require('./fixtures/sfo.cjs');
 
 const {
+  MAX_EDITOR_BYTES,
   createRemoteJob,
   readWorkspaceFile,
+  readWorkspacePage,
   resolveInside,
   runSaveJob,
   runZip,
@@ -23,14 +26,27 @@ const python = process.platform === 'win32' ? 'python' : 'python3';
 async function makeWorkspace(parent) {
   const workspace = path.join(parent, 'source-workspace');
   await fsPromises.mkdir(path.join(workspace, 'DATA', 'sce_sys'), { recursive: true });
-  const sfo = Buffer.alloc(0x1c0);
-  Buffer.from('3e338f700e51db91', 'hex').copy(sfo, 0x1b8);
+  const sfo = makeSfo('3e338f700e51db91');
   await fsPromises.writeFile(path.join(workspace, 'DATA', 'sce_sys', 'param.sfo'), sfo);
   await fsPromises.writeFile(path.join(workspace, 'DATA', 'save.dat'), Buffer.from([0, 1, 2, 255]));
   await fsPromises.writeFile(path.join(workspace, 'DATA', 'empty.dat'), '');
   await fsPromises.writeFile(path.join(workspace, 'chives.json'), JSON.stringify({ title_id: 'PPSA24003' }));
   return workspace;
 }
+
+test('an inline edit can grow past 8 MiB and reopen in pages', async t => {
+  const workspace = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'garlic-editor-boundary-'));
+  t.after(() => fsPromises.rm(workspace, { recursive: true, force: true }));
+  const file = 'data.bin';
+  const original = Buffer.alloc(MAX_EDITOR_BYTES, 0xab);
+  await writeWorkspaceFile(workspace, file, original.toString('base64'));
+  assert.equal((await readWorkspaceFile(workspace, file)).data, original.toString('base64'));
+  const grown = Buffer.concat([original, Buffer.from([0xcd])]);
+  await writeWorkspaceFile(workspace, file, grown.toString('base64'));
+  assert.deepEqual(await readWorkspaceFile(workspace, file), { path: file, size: grown.length, paged: true });
+  const end = await readWorkspacePage({ root: workspace, path: file, offset: grown.length - 2, length: 1024 });
+  assert.deepEqual(Buffer.from(end.data, 'base64'), grown.subarray(-2));
+});
 
 test('workspace editing preserves bytes and reads account ID', async () => {
   const parent = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'garlic-editor-info-'));
@@ -238,6 +254,7 @@ test('hex editor includes UTF-8 text and parses it back losslessly', () => {
   const start = source.indexOf('function bytesToHex');
   const end = source.indexOf('function updateEditorByteCount');
   const context = {
+    window: { EditorBytes: require('../electron/editor_bytes.js') },
     myControls: {
       editorMode: { value: 'hex' },
       fileEditor: { value: '' },

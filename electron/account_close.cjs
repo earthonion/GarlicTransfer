@@ -2,7 +2,7 @@ const { randomUUID } = require('node:crypto');
 const { t } = require('./i18n.js');
 
 // Function Account Close
-function registerAccountClose({ app, window, ipcMain, dialog, timeoutMs = 15000, onError = () => {} }) {
+function registerAccountClose({ app, window, ipcMain, dialog, timeoutMs = 15000, onError = () => {}, beforeClose }) {
   const contents = window.webContents;
   let ready = false, approved = false, quitting = false, disposed = false;
   let reloadPending = false, navigating = false, epoch = 0;
@@ -23,8 +23,8 @@ function registerAccountClose({ app, window, ipcMain, dialog, timeoutMs = 15000,
   }
 
   // Function Close Approval
-  function approve(current, version) {
-    if (!active(current, version)) return;
+  function finishClose(current) {
+    if (request !== current || disposed || window.isDestroyed()) return;
     approved = true;
     request = null;
     try { if (quitting) app.quit(); else window.close(); }
@@ -33,6 +33,21 @@ function registerAccountClose({ app, window, ipcMain, dialog, timeoutMs = 15000,
       report(error);
       send('accounts:close-cancelled', current.token);
     }
+  }
+
+  // Function Close Services
+  function prepareClose(current) {
+    if (request !== current || current.phase === 'cleanup') return;
+    clearTimeout(current.timer);
+    current.phase = 'cleanup';
+    if (!beforeClose) { finishClose(current); return; }
+    Promise.resolve().then(() => beforeClose()).catch(report).then(() => finishClose(current));
+  }
+
+  // Function Close Approval
+  function approve(current, version) {
+    if (!active(current, version)) return;
+    prepareClose(current);
   }
 
   // Function Close Decision
@@ -100,7 +115,16 @@ function registerAccountClose({ app, window, ipcMain, dialog, timeoutMs = 15000,
 
   // Function Close Request
   function close(event) {
-    if (approved || !alive() || (!ready && !request && !reloadPending)) return;
+    if (approved || disposed || window.isDestroyed()) return;
+    if (!alive() || (!ready && !request && !reloadPending)) {
+      if (!beforeClose) return;
+      event.preventDefault();
+      if (!request) {
+        request = { token: null, phase: 'approved', epoch, timer: null };
+        prepareClose(request);
+      }
+      return;
+    }
     event.preventDefault();
     if (request) return;
     const current = { token: null, phase: 'ready', epoch, deadline: Date.now() + timeoutMs, timer: null };
@@ -113,7 +137,7 @@ function registerAccountClose({ app, window, ipcMain, dialog, timeoutMs = 15000,
   function registered(event) {
     if (navigating || !sender(event)) return;
     ready = true; reloadPending = false;
-    if (request) flush(request);
+    if (request && request.phase !== 'cleanup') flush(request);
   }
   function flushed(event, token, result) {
     if (!sender(event) || !request || request.phase !== 'flush' || request.epoch !== epoch
@@ -131,7 +155,7 @@ function registerAccountClose({ app, window, ipcMain, dialog, timeoutMs = 15000,
   function navigation(event, _url, isInPlace, isMainFrame) {
     const main = typeof event?.isMainFrame === 'boolean' ? event.isMainFrame : isMainFrame;
     const same = typeof event?.isSameDocument === 'boolean' ? event.isSameDocument : isInPlace;
-    if (main !== true || same === true) return;
+    if (main !== true || same === true || request?.phase === 'cleanup') return;
     epoch++;
     reloadPending = ready || reloadPending || Boolean(request);
     ready = false; navigating = true;

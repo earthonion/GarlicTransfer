@@ -66,6 +66,7 @@
       if (display) display.disabled = disabled;
       if (add) {
         const duplicate = state.accounts.some(account => account.id === currentId);
+        add.hidden = !loaded || Boolean(loadError) || !currentId || duplicate;
         add.disabled = disabled || !currentId || duplicate;
         add.title = duplicate ? uiText('This account is already saved.') : uiText('Add the current save account to the list.');
       }
@@ -109,8 +110,8 @@
         else nameDialog.removeAttribute('open');
       }
       let opener = previous.opener;
-      if (!opener?.isConnected || opener.disabled) opener = add;
-      if (!opener || opener.disabled) opener = [useCurrent, target, display].find(control => control && !control.disabled);
+      if (!opener?.isConnected || opener.disabled || opener.hidden) opener = add;
+      if (!opener || opener.disabled || opener.hidden) opener = [useCurrent, target, display].find(control => control && !control.disabled && !control.hidden);
       opener?.focus();
     }
 
@@ -324,11 +325,13 @@
       const enabled = useCurrent.checked;
       mutate(() => bridge.setUseCurrent(enabled), enabled ? 'Using each save’s current account.' : 'Choose the target account.');
     });
-    add?.addEventListener('click', () => {
+    // Function Add Account
+    function addCurrentAccount(opener = add) {
       if (currentId && !state.accounts.some(account => account.id === currentId)) {
-        openNameDialog(currentId, add);
+        openNameDialog(currentId, opener);
       }
-    });
+    }
+    add?.addEventListener('click', () => addCurrentAccount());
     display?.addEventListener('change', () => {
       const mode = display.value;
       mutate(() => bridge.setDisplayMode(mode), 'Account display updated.');
@@ -371,6 +374,7 @@
 
     return {
       ready,
+      addCurrentAccount,
       waitForChanges,
       prepareClose,
       setCurrentAccount(value) {

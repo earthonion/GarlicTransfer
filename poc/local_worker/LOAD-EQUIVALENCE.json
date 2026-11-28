@@ -1,4 +1,6 @@
 {
+  "historical_report": true,
+  "note": "Strip-only comparison for the earlier helper identified by candidate_sha256. It does not describe the current process-name/title-ID build. Current binary and source hashes are in BUILD-METADATA.json.",
   "baseline_source_archive": "GarlicTransfer-main-Local-Oracle-Test1-Source.zip",
   "baseline_binary_entry": "poc/local_worker/garlic-local-worker.elf",
   "baseline_sha256": "1e55999186c0d9ae397c7f766744872f42b984b55b3f507f9418ed163c79e8d2",

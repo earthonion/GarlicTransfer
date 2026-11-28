@@ -41,10 +41,10 @@ function isolatedIo(overrides = {}) {
 }
 
 // Function Replacement Handlers
-function handlers(f, showOpenDialog) {
+function handlers(f, showOpenDialog, showSaveDialog) {
   const routes = new Map();
   registerSaveEditor({ ipcMain: { handle: (name, handler) => routes.set(name, handler) },
-    app: { getPath: () => f.root }, dialog: { showOpenDialog }, shell: {} });
+    app: { getPath: () => f.root }, dialog: { showOpenDialog, showSaveDialog }, shell: {} });
   return routes;
 }
 
@@ -258,21 +258,55 @@ for (const extension of ['tmp', 'backup']) {
   });
 }
 
-test('replacement allows metadata like Edit and rolls back malformed metadata after refresh fails', async t => {
+test('root and nested chives metadata can be read and exported but not edited, replaced or deleted', async t => {
+  const f = await fixture(t);
+  const original = await fs.readFile(path.join(f.workspace, 'chives.json'));
+  const nested = 'sdimg_sce_sdmemory/CHIVES.Json';
+  await fs.writeFile(path.join(f.workspace, nested), original);
+  let output = path.join(f.root, 'chives.json');
+  const routes = handlers(f, () => assert.fail('Protected files must not open the replacement picker'),
+    async () => ({ canceled: false, filePath: output }));
+  const info = await workspaceInfo(f.workspace);
+  assert.equal(info.files.find(file => file.path === f.relative).readOnly, false);
+  for (const relative of ['chives.json', nested]) {
+    const request = { root: f.workspace, path: relative };
+    assert.equal(info.files.find(file => file.path === relative).readOnly, true);
+    assert.equal(info.files.find(file => file.path === relative).protected, true);
+    assert.equal((await routes.get('save-editor:read')({}, request)).data, original.toString('base64'));
+    await assert.rejects(routes.get('save-editor:write')({}, { ...request, data: 'eA==' }), /read-only/);
+    await assert.rejects(routes.get('save-editor:replace')({}, request), /read-only/);
+    await assert.rejects(routes.get('save-editor:delete')({}, request), /read-only/);
+    await routes.get('save-editor:download-file')({}, request);
+    assert.deepEqual(await fs.readFile(output), original);
+    assert.deepEqual(await fs.readFile(path.join(f.workspace, relative)), original);
+  }
+  output = path.join(f.workspace, nested);
+  await assert.rejects(routes.get('save-editor:download-file')({}, { root: f.workspace, path: f.relative }), /read-only/);
+  await assert.rejects(routes.get('save-editor:download-archive')({}, { archivePath: f.source }), /read-only/);
+  assert.deepEqual(await fs.readFile(output), original);
+  await assert.rejects(routes.get('save-editor:write')({}, { root: f.workspace, path: nested + '. ', data: 'eA==' }), /read-only/);
+});
+
+test('adding files refuses new chives metadata before copying any selected file', async t => {
+  const f = await fixture(t);
+  await fs.unlink(path.join(f.workspace, 'chives.json'));
+  const metadata = path.join(f.root, 'CHIVES.json');
+  await fs.writeFile(metadata, '{}');
+  const routes = handlers(f, async () => ({ canceled: false, filePaths: [f.source, metadata] }));
+  await assert.rejects(routes.get('save-editor:add')({}, { root: f.workspace }), /read-only/);
+  assert.deepEqual(await fs.readdir(f.workspace), ['sdimg_sce_sdmemory']);
+});
+
+test('an export destination linked to workspace metadata leaves the metadata untouched', async t => {
   const f = await fixture(t);
   const metadata = path.join(f.workspace, 'chives.json');
   const original = await fs.readFile(metadata);
-  await fs.writeFile(f.source, '{bad JSON');
-  const routes = handlers(f, async () => ({ canceled: false, filePaths: [f.source] }));
-  await assert.rejects(routes.get('save-editor:replace')({}, { root: f.workspace, path: 'chives.json' }), SyntaxError);
+  const alias = path.join(f.root, 'export.dat');
+  try { await fs.symlink(metadata, alias, 'file'); }
+  catch (error) { if (error.code === 'EPERM') return t.skip('File links unavailable'); throw error; }
+  const routes = handlers(f, null, async () => ({ filePath: alias }));
+  await assert.rejects(routes.get('save-editor:download-file')({}, { root: f.workspace, path: f.relative }), /read-only/);
   assert.deepEqual(await fs.readFile(metadata), original);
-  assert.equal(await fs.readFile(f.source, 'utf8'), '{bad JSON');
-  assert.deepEqual((await fs.readdir(f.workspace)).sort(), ['chives.json', 'sdimg_sce_sdmemory']);
-  await fs.writeFile(f.source, '{"title_id":"PPSA54321"}');
-  const info = await routes.get('save-editor:replace')({}, { root: f.workspace, path: 'chives.json' });
-  assert.equal(info.titleId, 'PPSA54321');
-  assert.equal(info.files.find(file => file.path === 'chives.json').protected, true);
-  assert.equal(info.files.length, 2);
 });
 
 test('a failed completion refresh restores the original before reporting failure', async t => {

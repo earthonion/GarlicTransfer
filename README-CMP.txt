@@ -1,11 +1,147 @@
-GarlicTransfer - Console Finder, Editor Tree and Replace File
-Source: GitHub main f36b80541c13d280ba08c38b2ea85fa1410e7618
+GarlicTransfer - Editor Popup and Right-Click Actions
+Source: GitHub main 974ac25e2a650a13fe0725eea1dc91089f1d83b7 (v0.4.5)
 The upstream app version values are preserved.
+Our changes are rebased onto this upstream revision.
+
+UPSTREAM SAVE LIST UPDATES
+Local files has Search saves for game names, title IDs, filenames, users and
+entry IDs in both tree and Classic layouts. Escape clears the search.
+Local listing reuses size/mtime-validated file digests from
+Transfer-Metadata/hash-cache.json. Uploads, imports and exports continue to
+verify file content with fresh hashes. Our editor, batch PPSA, account, skin,
+folder and local-worker additions are retained.
 
 INSTALL
 Close GarlicTransfer. Merge the update ZIP's resources folder into the resources
-folder of the matching installation, replacing app.asar and poc/dt_resign.py.
-Run GarlicTransfer normally. The PS5 helper binaries are unchanged.
+folder of a v0.4.5 installation, replacing app.asar,
+poc/dt_save_editor.py, poc/dt_layout.py, poc/dt_local_saves.py,
+poc/dt_metadata.py and poc/local_worker/garlic-local-worker.elf.
+Stop the old local helper on the PS5
+before deploying the updated payload. Run GarlicTransfer normally.
+
+LOCAL WORKER NAME
+The local payload calls sceKernelSetProcessName("GarlicWorker.elf") at startup.
+Its packaged filename remains garlic-local-worker.elf for automatic deployment.
+A naming failure is logged and does not prevent the helper from starting.
+
+EDITOR LAYOUT
+Decrypted files open in Hex. Select Text to edit UTF-8 when it can be converted
+back to the exact same bytes. A UTF-8 BOM is preserved. Files with invalid UTF-8
+or CR/CRLF line endings stay in Hex. Saving an untouched file skips the write,
+and Save & encrypt can still encrypt it.
+Large files open in the same editor. Use the mouse wheel to scroll or drag the
+scrollbar to move through the whole file. Go to offset and Find use positions
+in the edited file. Your edits stay in the draft as you scroll. Text mode checks
+the whole file for a lossless UTF-8 conversion before switching. Select All
+covers the loaded section. Use Export file to copy the whole file to disk.
+Saving a large file streams the result to a temporary file alongside the
+original. Keep enough free space for one copy of the edited file.
+Text Find selects matches by their position in the original text, including
+after Unicode characters. Moving through the file tree updates only the
+previous and current rows.
+Go to offset uses the current edited file length, including unsaved additions
+or removals. Incomplete hex and empty drafts show a message without moving
+the cursor. Escape closes the editor's More menu first; another Escape then
+closes the editor after the usual unsaved-change check.
+The current-account reader uses the named ACCOUNT_ID field in param.sfo.
+A fresh folder scan is shared by the header, account reader and batch planner;
+file changes are picked up on the next scan. Hex Find searches the edited
+draft, advances to the next match and wraps around. Byte counts are coalesced
+while typing and do not rebuild the byte array for each keystroke. Popup reset
+and busy-control handling are shared. Batch failures report once with the
+affected save name. Function notes use short labels such as Function = Read Account.
+
+The information line shows Saves / Files / Current Account / Game ID / Game Name.
+Use current ID, Target account and Add Account are underneath it. Add Account
+is beside the target selector and appears only for a current ID that is not
+already saved. The existing right-click Add Account action remains available.
+Game names use the bundled title catalog, including for externally opened
+workspaces, and stay present after file edits and replacements.
+
+The decrypted file tree uses the full workspace width. Click a file to select
+it; double-click, press Enter or choose Edit file from its right-click menu to
+open the editor popup. Find, hex offsets, Replace file, Export file, Save changes
+and Save & encrypt remain available. Closing a dirty editor asks before
+discarding its draft. Switching Text/Hex keeps the draft and its dirty flag.
+Save & encrypt closes the popup after saving, leaving job progress and Cancel
+available in the main window.
+
+Right-click a file, folder or empty tree area for Add Account or ReRegion.
+Add Account uses the existing account naming and duplicate-name checks.
+ReRegion shows the current PPSA and asks for its replacement. Apply commits
+the target; Cancel keeps the previous choice. Leave it blank to clear the
+pending title change. The chosen target is shown below the account controls
+and is applied during encryption. Batch mode applies it to every save.
+ReRegion is also in More and remains local-worker only.
+
+LOCAL WORKER SHUTDOWN
+Closing GarlicTransfer requests shutdown of each compatible local helper used
+by this app session. Account-name saves and any approved close decision finish
+first. The app cancels and drains its current save request before contacting
+the helper. Canceling the close keeps the helper running.
+
+The updated helper advertises its process-instance ID and a local shutdown
+listener on TCP 9024. The app verifies that identity before requesting shutdown.
+The helper stops new work, releases interrupted network waits, and finishes
+save unmounting, credential restoration and temporary-file cleanup. It joins
+its local threads and exits normally. The existing remote worker and an
+independent oracle on 9022 are not stopped.
+
+An older helper must be restarted with this updated payload once before
+automatic shutdown is available. An unreachable console or replaced helper
+is reported without sending a stop command to another process. Forced app
+termination or loss of the network cannot guarantee remote shutdown.
+
+PPSA TITLE CHANGES
+In Local files, use the local worker and open a save. Choose ReRegion from
+the right-click menu or More. Leave Replace with blank to keep the existing
+title, or enter PPSA followed by five digits and Apply. Encrypt and Resign can apply the new title
+while keeping the current Account ID or using the selected target account.
+To resign with Use current ID, first decrypt that selected save so the app can
+read its current Account ID.
+
+The worker validates param.sfo and changes all complete matching source PPSA
+references inside its used metadata values. This includes TITLE_ID, CONTENT_ID,
+SAVEDATA_DIRECTORY and binary SFO metadata. It then rebuilds the encrypted
+PS5PARAM metadata through the existing save engine, including CoW saves.
+Malformed, conflicting or zeroed SFO data is rejected. Game payload files are
+not searched or modified by the title change.
+
+A changed title exports a new encrypted ZIP. It does not replace the original
+save or its transfer metadata. Extract the new save into a folder named with
+the target PPSA, then add that folder through the existing upload workflow.
+The Upload button blocks sending the original entry while a different target
+PPSA is selected. Decrypted workspaces retain their original metadata.
+
+This option requires the updated local helper. Older helpers are detected
+before a title-change job is sent. Hosted worker jobs keep their existing
+behavior and do not receive this new parameter. Changing the PPSA does not
+convert game-specific save formats; destination-game compatibility needs a
+console test.
+
+BATCH PPSA CHANGES
+Open a decrypted workspace containing separate save folders, each with its own
+sce_sys/param.sfo and chives.json. The editor shows the save count and an
+Encrypt all button. Select one target PPSA to apply it to every save, or leave
+the field blank to retain their original titles. Use current ID preserves
+each save's own Account ID; choosing a target account applies it to all saves.
+
+The local worker encrypts each save separately and the app collects their
+results in one ZIP under PPSA#####/encrypted-filename. Extract that ZIP and
+add the PPSA folder through the existing upload workflow. Batch export never
+replaces the selected original save. Sources and chives.json are unchanged;
+the existing worker updates each save's real SFO during encryption.
+
+Each save needs its own valid metadata. Shared metadata, overlapping save
+folders, missing account data and duplicate output names are rejected before
+jobs start. The app builds the ZIP beside the chosen output and replaces it
+only when complete. Canceling removes partial files. Batch export requires
+local worker mode. Single-save workspaces and hosted worker jobs keep their
+existing behavior.
+
+CONSOLE TYPE
+Locate currently reports PS5 for both standard and Pro systems when that is
+the type returned by discovery. No automatic Pro model inference was added.
 
 WINDOWS RESIGN DATABASE FIX
 Resign metadata reads close their SQLite connections before returning or
@@ -49,11 +185,14 @@ results from older saves cannot replace the latest status or draft.
 
 EDITOR FILE TREE
 Edit your save now groups decrypted files into expandable folders.
+Garlic keeps chives.json visible for export and protects it from editing,
+replacement, addition, and deletion in every save folder. If existing metadata
+is malformed, the tree shows which save needs attention. Restore a known-good
+workspace or decrypt the original again before encrypting.
 Right-click a file and choose Replace file to select a replacement on your PC.
 The selected workspace file keeps its original name and folder location.
 Cancel leaves it unchanged. Replacing the file currently open in the editor
 asks before discarding unsaved text; edits to another open file are retained.
-Replacement also supports files larger than the text/hex editor limit.
 Use Save & encrypt or Export files to keep the updated save.
 
 LOCAL PC SAVES
@@ -93,7 +232,8 @@ SAVED ACCOUNTS
 The current account appears beside the target selector in the save screens.
 Known accounts show their saved name; hover over it to see the full hex ID.
 Accounts without a saved name still show their hex ID.
-Add current ID opens a Name dialog. Enter a name and press Save or Enter.
+Add Account beside Target account or in the right-click menu opens a Name dialog.
+Enter a name and press Save or Enter.
 Cancel or Escape closes it without adding an account.
 Settings / Saved accounts has Account ID, Name and Remove columns in its own
 scroll area. Type directly in the Name field; it saves after a short pause.
@@ -221,10 +361,11 @@ INCLUDED TREE CLEANUP
 - All previous changes and external skin formats are included.
 
 VALIDATION
-121 Python tests passed locally after the resign database fix. Connection
-checks cover normal reads, failed reads and both local-copy fallback outcomes.
-The preceding editor/console-finder build passed all 528 Node tests; its
-Electron files are unchanged by this fix. Windows CI still needs to be rerun.
+577 Node tests and 145 Python tests passed locally. Native checks exercise the
+PPSA parser, verified file writes and shutdown control, including waiting for a
+failed unmount to succeed before restoring credentials or deleting files. The separate
+native helper transport suite passed 14 tests. The PS5 payload cross-compiled
+with the pinned toolchain. Windows CI and live PS5 execution still need testing.
 The packaged Electron files match the tested source.
 Name entry, automatic saving, Enter, Cancel/Escape, failed-save retry, focus,
 caret retention and current-name tooltips are covered by DOM event tests.
@@ -232,9 +373,8 @@ Windows appearance and native input still need testing on your machine.
 No live PS5 test performed.
 
 CONTENTS
-The update ZIP contains resources/app.asar and resources/poc/dt_resign.py.
-The app.asar retains the previously tested editor and console-finder changes;
-the Windows resign runtime fix is in poc/dt_resign.py.
+The update ZIP contains resources/app.asar and
+resources/poc/local_worker/garlic-local-worker.elf, plus this README.
 The source ZIP opens directly at the project root, with source and tests.
 skin-template/my-onion/: editable external add-in example.
 poc/local_worker/: matching helper source and GPL license.

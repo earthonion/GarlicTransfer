@@ -288,6 +288,7 @@
                     <button id="mySaveExportBtn" type="button">Export original</button>
                     <button id="mySaveImportBtn" type="button">Replace with another save…</button>
                     <button id="mySaveResignBtn" type="button">Resign</button>
+                      <button id="resignReRegionBtn" type="button">ReRegion…</button>
                   </div>
                 </div>
               </div>
@@ -306,31 +307,33 @@
           <div class="wizard-panel" data-wizard="2">
             <section id="workspacePanel" class="card workspace-card">
               <div class="workspace-header">
-                <div class="workspace-heading">
-                  <h2>Edit your save</h2>
-                  <p id="workspaceSummary" class="hint"></p>
-                  <div id="workspaceAccountControls" class="workspace-account-controls">
-                    <p class="workspace-current-account hint">Current account <span id="workspaceAccountId">Not available</span></p>
-                    <label class="workspace-use-current checkbox"><input id="useCurrentAccountId" type="checkbox" checked> Use current ID</label>
-                    <label class="workspace-target-account">Target account
-                      <select id="targetAccountSelect" aria-label="Target account for encrypt and resign" disabled>
-                        <option value="">Choose account…</option>
-                      </select>
-                    </label>
-                    <button id="addCurrentAccountBtn" type="button">Add current ID</button>
-                  </div>
-                </div>
+                <div class="workspace-heading"><h2>Edit your save</h2></div>
                 <div class="workspace-toolbar">
                   <button id="encryptSaveBtn" class="btn-primary" type="button">Save &amp; encrypt</button>
                   <button id="uploadEncryptedBtn" type="button">Upload to PS5</button>
                   <div class="dropdown" id="workspaceMoreMenu">
                     <button id="workspaceMoreBtn" type="button" aria-haspopup="true" aria-expanded="false">More ▾</button>
                     <div id="workspaceMoreOptions" class="dropdown-content" hidden>
+                      <button id="reRegionBtn" type="button">ReRegion…</button>
                       <button id="exportDecryptedBtn" type="button">Export decrypted ZIP</button>
                       <button id="addFilesBtn" type="button">Add files…</button>
                       <button id="closeWorkspaceBtn" type="button">Close files</button>
                     </div>
                   </div>
+                </div>
+                <p id="workspaceSummary" class="workspace-summary hint"><span id="workspaceCounts"></span><span aria-hidden="true">·</span><span id="workspaceAccountSlot"><span id="workspaceCurrentAccount" class="workspace-current-account">Current Account: <span id="workspaceAccountId">Not available</span><span id="workspaceBatchAccountId" title="Each save keeps its own Account ID when Use current ID is checked." hidden>Multiple accounts</span></span></span><span aria-hidden="true">·</span><span id="workspaceGameId"></span><span aria-hidden="true">·</span><span id="workspaceGameName"></span></p>
+                <p id="workspaceBatchWarning" class="hint" hidden></p>
+                <div id="workspaceAccountControls" class="workspace-account-controls">
+                  <label class="workspace-use-current checkbox"><input id="useCurrentAccountId" type="checkbox" checked> Use current ID</label>
+                  <div class="workspace-target-group">
+                    <label class="workspace-target-account">Target account
+                      <select id="targetAccountSelect" aria-label="Target account for encrypt and resign" disabled>
+                        <option value="">Choose account…</option>
+                      </select>
+                    </label>
+                    <button id="addCurrentAccountBtn" type="button" hidden>Add Account…</button>
+                  </div>
+                  <span id="workspaceTargetTitle" class="workspace-region-status hint" hidden></span>
                 </div>
               </div>
               <div id="encryptPanel" class="operation-form" hidden>
@@ -346,36 +349,7 @@
                     <tbody id="workspaceFiles" role="rowgroup"></tbody>
                   </table>
                 </div>
-                <div id="fileEditorPanel" class="file-editor" hidden>
-                  <div class="editor-heading">
-                    <strong id="editorFileName"></strong>
-                    <select id="editorMode" aria-label="Editor mode"><option value="text">Text</option><option value="hex">Hex</option></select>
-                  </div>
-                  <div class="editor-tools">
-                    <input id="editorSearch" placeholder="Find text or hex bytes" aria-label="Find text or hex bytes">
-                    <button id="editorFindNext" type="button">Find</button>
-                    <input id="editorOffset" placeholder="Offset (hex)" aria-label="Offset in hexadecimal">
-                    <button id="editorGoOffset" type="button">Go</button>
-                    <button id="editorRevert" type="button">Revert</button>
-                    <span id="editorByteCount">0 bytes</span>
-                  </div>
-                  <div class="editor-area">
-                    <textarea id="fileEditor" spellcheck="false" aria-label="Save file editor"></textarea>
-                  </div>
-                  <p id="editorHint" class="hint">Select a file to edit. Metadata and sce_sys files are protected from deletion.</p>
-                  <div class="editor-actions">
-                    <button id="saveEncryptFileBtn" class="btn-primary editor-btn" type="button">Save &amp; encrypt</button>
-                    <button id="saveFileBtn" class="editor-btn" type="button">Save file</button>
-                    <div class="dropdown" id="fileMoreMenu">
-                      <button id="fileMoreBtn" class="editor-btn" type="button" aria-haspopup="true" aria-expanded="false">More ▾</button>
-                      <div id="fileMoreOptions" class="dropdown-content" hidden>
-                        <button id="replaceFileBtn" type="button">Replace file…</button>
-                        <button id="downloadFileBtn" type="button">Export file</button>
-                        <button id="deleteFileBtn" class="danger" type="button">Delete file</button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+
               </div>
             </section>
             <button class="wizard-back" data-go="1" type="button">← Back to save</button>
@@ -501,6 +475,62 @@
     </div>
   </div>
 
+  <dialog id="fileEditorDialog" class="modal file-editor-modal" aria-labelledby="fileEditorDialogHeading">
+    <div class="editor-modal-heading">
+      <h2 id="fileEditorDialogHeading">Edit file</h2>
+      <button id="closeFileEditorBtn" type="button" aria-label="Close file editor">Close</button>
+    </div>
+                <div id="fileEditorPanel" class="file-editor" hidden>
+                  <div class="editor-heading">
+                    <strong id="editorFileName"></strong>
+                    <select id="editorMode" aria-label="Editor mode"><option value="hex">Hex</option><option value="text">Text</option></select>
+                  </div>
+                  <div class="editor-tools">
+                    <input id="editorSearch" placeholder="Find text or hex bytes" aria-label="Find text or hex bytes">
+                    <button id="editorFindNext" type="button">Find</button>
+                    <input id="editorOffset" placeholder="Offset (hex)" aria-label="Offset in hexadecimal">
+                    <button id="editorGoOffset" type="button">Go</button>
+                    <button id="editorRevert" type="button">Revert</button>
+                    <span id="editorByteCount">0 bytes</span>
+                  </div>
+                  <div class="editor-area">
+                    <textarea id="fileEditor" spellcheck="false" aria-label="Save file editor"></textarea>
+                    <div id="editorScroll" aria-hidden="true" hidden><div id="editorScrollTrack"></div></div>
+                  </div>
+                  <p id="editorHint" class="hint">Select a file to edit. Metadata and sce_sys files are protected from deletion.</p>
+                  <div class="editor-actions">
+                    <button id="saveEncryptFileBtn" class="btn-primary editor-btn" type="button">Save &amp; encrypt</button>
+                    <button id="saveFileBtn" class="editor-btn" type="button">Save file</button>
+                    <div class="dropdown" id="fileMoreMenu">
+                      <button id="fileMoreBtn" class="editor-btn" type="button" aria-haspopup="true" aria-expanded="false">More ▾</button>
+                      <div id="fileMoreOptions" class="dropdown-content" hidden>
+                        <button id="replaceFileBtn" type="button">Replace file…</button>
+                        <button id="downloadFileBtn" type="button">Export file</button>
+                        <button id="deleteFileBtn" class="danger" type="button">Delete file</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+    <p id="editorStatus" class="hint" role="status" aria-live="polite"></p>
+  </dialog>
+
+  <dialog id="reRegionDialog" class="modal re-region-modal" aria-labelledby="reRegionHeading">
+    <form id="reRegionForm" novalidate>
+      <h2 id="reRegionHeading">ReRegion</h2>
+      <p>Current: <strong id="reRegionCurrentTitle"></strong></p>
+      <p id="reRegionScope" class="hint" hidden></p>
+      <label>Replace with
+        <input id="targetTitleId" maxlength="9" spellcheck="false" autocomplete="off" placeholder="PPSA12345" aria-describedby="targetTitleIdHint reRegionError">
+      </label>
+      <p id="targetTitleIdHint" class="hint">Leave blank to keep the title. A changed PPSA exports a new encrypted ZIP.</p>
+      <p id="reRegionError" class="account-name-error" role="status" aria-live="polite"></p>
+      <div class="modal-actions">
+        <button id="applyReRegionBtn" class="btn-primary" type="submit">Apply</button>
+        <button id="cancelReRegionBtn" type="button">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="accountNameDialog" class="modal account-name-modal" aria-labelledby="accountNameHeading" aria-describedby="accountNameDescription">
     <form id="accountNameForm">
       <h2 id="accountNameHeading">Add account</h2>
@@ -576,6 +606,11 @@
   <script src="renderer.js"></script>
   <script src="accounts_ui.js"></script>
   <script src="workspace_tree.js"></script>
+  <script src="editor_bytes.js"></script>
+  <script src="paged_text.js"></script>
+  <script src="paged_editor.js"></script>
+  <script src="editor_text_scroll.js"></script>
+  <script src="editor_scroll.js"></script>
   <script src="my_saves.js"></script>
 </body>
 </html>

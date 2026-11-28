@@ -256,6 +256,62 @@ test('local worker requires the matching PS5 helper protocol', async (t) => {
   await f.unchanged();
 });
 
+test('local PPSA changes negotiate support and stream the target with encrypt and resign', async (t) => {
+  for (const operation of ['encrypt', 'resign']) {
+    await t.test(operation, async t => {
+      const f = await fixture(t, async peer => {
+        const job = await begin(peer, {
+          type: 'hello', protocol: 'garlic-local-v1', platform: 'ps5', capabilities: ['target_title_id'],
+        });
+        assert.equal(job.operation, operation);
+        assert.equal(job.params.target_title_id, 'PPSA54321');
+        assert.equal(job.params.account_id, '0833114e9585c53c');
+        assert.deepEqual(await inputFor(peer, job), f.input);
+        await resultFor(peer, job, Buffer.from('PK\x03\x04retitled'));
+        peer.socket.end(frame({ type: 'status', job_id: job.id, status: 'done' }));
+      });
+      await f.run({ operation, params: { account_id: '0833114e9585c53c', target_title_id: 'PPSA54321' } });
+      assert.equal(await fs.readFile(f.options.resultPath, 'utf8'), 'PK\x03\x04retitled');
+      assert.deepEqual(await fs.readFile(f.options.inputArchive), f.input);
+    });
+  }
+});
+
+test('older or unsupported helpers receive no PPSA-change job or input archive', async (t) => {
+  for (const capabilities of [undefined, [], 'target_title_id', ['other_feature']]) {
+    await t.test(JSON.stringify(capabilities) || 'no capabilities', async t => {
+      let receivedBytes = 0;
+      const closed = gate();
+      const f = await fixture(t, async peer => {
+        peer.socket.on('data', chunk => { receivedBytes += chunk.length; });
+        peer.socket.once('close', closed.resolve);
+        await peer.send({ type: 'hello', protocol: 'garlic-local-v1', platform: 'ps5', capabilities });
+      });
+      await assert.rejects(f.run({
+        operation: 'encrypt', params: { account_id: '0833114e9585c53c', target_title_id: 'PPSA54321' },
+      }), /PPSA|title.?ID|restart|update|upgrade/i);
+      await closed.promise;
+      assert.equal(receivedBytes, 0);
+      await f.unchanged();
+    });
+  }
+});
+
+test('invalid PPSA parameters are rejected before a local helper connection opens', async (t) => {
+  let connections = 0;
+  const f = await fixture(t, () => { connections++; });
+  for (const target_title_id of ['PPSA1234', 'PPSA123456', 'CUSA12345', 'PPSA12A45']) {
+    await assert.rejects(f.run({
+      operation: 'encrypt', params: { account_id: '0833114e9585c53c', target_title_id },
+    }), /PPSA|title ID/i);
+  }
+  await assert.rejects(f.run({
+    operation: 'decrypt', params: { target_title_id: 'PPSA54321' },
+  }), /encrypt|resign|PPSA|title ID/i);
+  assert.equal(connections, 0);
+  await f.unchanged();
+});
+
 test('local worker rejects mismatched IDs for file, log, result and status messages', async (t) => {
   for (const message of [
     { type: 'file_request' }, { type: 'log', msg: 'wrong job' },
